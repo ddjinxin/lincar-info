@@ -180,6 +180,7 @@ public class MainActivity extends Activity {
     private View tagLFTire, tagRFTire, tagLRTire, tagRRTire, tagTrunk;
     private ImageView ivCar;
     private View carZone;
+    private TagLineOverlay tagLines;
     /** 是否已连上车机数据（模拟器无 Car API 时用模拟数据展示界面） */
     private boolean hasRealData;
 
@@ -296,6 +297,7 @@ public class MainActivity extends Activity {
         tagTrunk = findViewById(R.id.tagTrunk);
         ivCar = findViewById(R.id.ivCar);
         carZone = findViewById(R.id.carZone);
+        tagLines = findViewById(R.id.tagLines);
         bootLog("[UI] findViewById OK");
 
         applyFontScale();
@@ -388,30 +390,25 @@ public class MainActivity extends Activity {
     private void positionCarTags() {
         int zw = carZone.getWidth(), zh = carZone.getHeight();
         if (zw <= 0 || zh <= 0) return;
-        bootLog("[UI] carZone=" + zw + "x" + zh + " 开始V12百分比定位");
+        bootLog("[UI] carZone=" + zw + "x" + zh + " 等间距环绕定位");
 
-        // —— V12 效果图坐标方案（相对 carZone 百分比）——
-        // 胎压四角：left/right 14%，top 9% / bottom 12%（斜对角分布）
-        // 门窗侧标：left/right 1.5%，top 26% / 56%（贴 carZone 边缘，与胎压水平错开）
-        // 后备箱：bottom 1%，水平居中
+        // —— 等间距定位方案 ——
+        // 胎压四角位置固定（保持现状）：left/right 14%，前胎压 top 9%、后胎压 bottom 12%
+        // 每侧 4 个标签（前胎压→前门窗→后门窗→后胎压）垂直中心等间距
         float tireEdgeX = zw * 0.14f;       // 胎压标签离左/右边缘 14%
-        float dwEdgeX = zw * 0.06f;        // 门窗标签离左/右边缘 6%（约16dp）
-        float tireTopY = zh * 0.09f;       // 前胎压 y
-        float tireBotY = zh * 0.88f;       // 后胎压 y（bottom 12% → top 88%）
-        float dwFrontY = zh * 0.26f;       // 前门窗 y
-        float dwRearY = zh * 0.56f;       // 后门窗 y
+        float dwEdgeX = zw * 0.06f;        // 门窗标签离左/右边缘 6%
+        float tireTopY = zh * 0.09f;       // 前胎压 y（顶部锚）
+        float tireBotY = zh * 0.88f;       // 后胎压 y（底部锚，bottom 12%）
 
-        // 胎压标签：左前/右前在顶部、左后/右后在底部
-        placeCornerTag(tagLFTire, tireEdgeX, tireTopY, true, false);   // 左上角，右下锚
-        placeCornerTag(tagRFTire, zw - tireEdgeX, tireTopY, false, false); // 右上角，左下锚
-        placeCornerTag(tagLRTire, tireEdgeX, tireBotY, true, true);    // 左下角，右上锚
-        placeCornerTag(tagRRTire, zw - tireEdgeX, tireBotY, false, true); // 右下角，左上锚
+        // 胎压四角（位置保持不变）
+        placeCornerTag(tagLFTire, tireEdgeX, tireTopY, true, false);   // 左上角
+        placeCornerTag(tagRFTire, zw - tireEdgeX, tireTopY, false, false); // 右上角
+        placeCornerTag(tagLRTire, tireEdgeX, tireBotY, true, true);    // 左下角
+        placeCornerTag(tagRRTire, zw - tireEdgeX, tireBotY, false, true); // 右下角
 
-        // 门窗标签：左侧两个 + 右侧两个（贴 carZone 边缘）
-        placeCornerTag(tagLFDw, dwEdgeX, dwFrontY, true, false);       // 左前门窗
-        placeCornerTag(tagRFDw, zw - dwEdgeX, dwFrontY, false, false); // 右前门窗
-        placeCornerTag(tagLRDw, dwEdgeX, dwRearY, true, false);        // 左后门窗
-        placeCornerTag(tagRRDw, zw - dwEdgeX, dwRearY, false, false);  // 右后门窗
+        // 门窗标签：在前后胎压之间垂直等间距分布（前门窗=前胎压中心+step，后门窗=+2step）
+        placeBetweenTires(tagLFTire, tagLFDw, tagLRDw, tagLRTire, tireTopY, tireBotY, dwEdgeX, true);
+        placeBetweenTires(tagRFTire, tagRFDw, tagRRDw, tagRRTire, tireTopY, tireBotY, zw - dwEdgeX, false);
 
         // 后备箱：车图底部居中
         if (tagTrunk != null) {
@@ -427,6 +424,93 @@ public class MainActivity extends Activity {
                 tagLFDw, tagRFDw, tagLRDw, tagRRDw}) {
             if (tag != null) tag.bringToFront();
         }
+        if (tagTrunk != null) tagTrunk.bringToFront();
+
+        // —— 9 个红点紧贴车图 + 虚线连到标签 ——
+        linkTagDots();
+    }
+
+    /** 算车图 fitCenter 显示矩形（3552:4736 比例），返回 left/top/fitW/fitH */
+    private float[] carImgRect(int zw, int zh) {
+        float ratio = 4736f / 3552f; // 高/宽
+        int mL = dip(30) + dip(6), mR = dip(30) + dip(6);
+        int mT = dip(24) + dip(6), mB = dip(24) + dip(6);
+        int availW = Math.max(1, zw - mL - mR);
+        int availH = Math.max(1, zh - mT - mB);
+        float fitW, fitH;
+        if (availW * ratio >= availH) { fitH = availH; fitW = fitH / ratio; }
+        else { fitW = availW; fitH = fitW * ratio; }
+        float left = (zw - fitW) / 2f, top = (zh - fitH) / 2f;
+        return new float[]{left, top, fitW, fitH};
+    }
+
+    /** 9 个标注点标在车图实体上（轮胎心/车体侧缘/车尾），虚线连到对应标签中心；alert=true 红色，false 青色 */
+    private void linkTagDots() {
+        if (tagLines == null) return;
+        int zw = carZone.getWidth(), zh = carZone.getHeight();
+        float[] r = carImgRect(zw, zh);
+        float left = r[0], top = r[1], fitW = r[2], fitH = r[3];
+        // 车门高度车体实测边缘（y 43%/56% 处）：x 26.9% / 73.1%（21.9%/78.0% 是轮胎外缘，不是车体）
+        float bodyL = left + fitW * 0.269f, bodyR = left + fitW * 0.731f;
+        // 四轮胎心（像素实测：前轮 y 29%、后轮 y 73.2%，左轮 x 24%、右轮 x 75.8%）
+        float tireFrontY = top + fitH * 0.290f, tireRearY = top + fitH * 0.732f;
+        float tireLX = left + fitW * 0.240f, tireRX = left + fitW * 0.758f;
+        // 车门位置（图内 y 46% / 59%；后门窗点下移，与前门窗点拉开足够间距）
+        float doorFrontY = top + fitH * 0.460f, doorRearY = top + fitH * 0.590f;
+        // 车尾（x 50%，y 86% 车体底部附近）
+        float tailX = left + fitW * 0.50f, tailY = top + fitH * 0.860f;
+
+        tagLines.clear();
+        // 胎压 4 点 → 四轮胎心（异常=压力<200kPa）
+        tagLines.setLink(tireLX, tireFrontY, tagLFTire, tireAlert(tireData.get(1)));
+        tagLines.setLink(tireRX, tireFrontY, tagRFTire, tireAlert(tireData.get(2)));
+        tagLines.setLink(tireLX, tireRearY, tagLRTire, tireAlert(tireData.get(4)));
+        tagLines.setLink(tireRX, tireRearY, tagRRTire, tireAlert(tireData.get(8)));
+        // 门窗 4 点 → 车体左右边缘车门处（异常=门开或窗开）
+        tagLines.setLink(bodyL, doorFrontY, tagLFDw, doorAlert(evDoorLB, winDriver));
+        tagLines.setLink(bodyR, doorFrontY, tagRFDw, doorAlert(evDoorRB, winPassenger));
+        tagLines.setLink(bodyL, doorRearY, tagLRDw, doorAlert(evDoorLR, winLeftRear));
+        tagLines.setLink(bodyR, doorRearY, tagRRDw, doorAlert(evDoorRR, winRightRear));
+        // 尾部 1 点 → 车尾中央（异常=后备箱/尾门开）
+        tagLines.setLink(tailX, tailY, tagTrunk,
+                getInt(evTrunkIn) > 0 || getInt(evTrunkOut) > 0);
+        tagLines.apply();
+    }
+
+    /** 胎压异常判定：<200kPa（无效值 65533 视为无数据不报警） */
+    private boolean tireAlert(TireData td) {
+        return td != null && td.pressure < 200f && td.pressure < 65533f;
+    }
+
+    /** 门窗异常判定：门开或窗开（窗 0=开 1=关，-1 无数据） */
+    private boolean doorAlert(Object doorEv, int winState) {
+        return getInt(doorEv) > 0 || winState == 0;
+    }
+
+    /**
+     * 一侧 4 个标签垂直等间距：前胎压(顶部锚) → 门窗A → 门窗B → 后胎压(底部锚)
+     * 前/后胎压位置固定，两个门窗标签按 1/3、2/3 分点垂直居中分布
+     * @param x       门窗标签 x 锚点；atLeft=true 左对齐，false 右对齐
+     */
+    private void placeBetweenTires(View tireFront, View dwA, View dwB, View tireRear,
+                                   float tireTopY, float tireBotY, float x, boolean atLeft) {
+        if (tireFront == null || tireRear == null || dwA == null || dwB == null) return;
+        float cFront = tireTopY + tireFront.getHeight() / 2f;   // 前胎压中心
+        float cRear = tireBotY - tireRear.getHeight() / 2f;     // 后胎压中心
+        float step = (cRear - cFront) / 3f;                     // 四标签三段等距
+        centerTagAt(dwA, x, cFront + step, atLeft);
+        centerTagAt(dwB, x, cFront + step * 2f, atLeft);
+    }
+
+    /** 标签垂直居中于 centerY；atLeft=true 水平左对齐 x，false 水平右对齐 x */
+    private void centerTagAt(View tag, float x, float centerY, boolean atLeft) {
+        if (tag == null) return;
+        int w = tag.getWidth(), h = tag.getHeight();
+        android.widget.FrameLayout.LayoutParams lp =
+                (android.widget.FrameLayout.LayoutParams) tag.getLayoutParams();
+        lp.leftMargin = Math.round(atLeft ? x : x - w);
+        lp.topMargin = Math.round(centerY - h / 2f);
+        tag.setLayoutParams(lp);
     }
 
     /**
@@ -1895,6 +1979,9 @@ public class MainActivity extends Activity {
         int airLevel = parseHvacIntStatic(hvacLatestValue(20513));
         tvAirLevel.setText("出风强度 " + (airLevel < 0 ? "--" : airLevel));
         setChipBg(tvAirLevel, false);
+
+        // 标注点颜色同步：正常青、异常红（胎压<200kPa、门窗开、后备箱开）
+        linkTagDots();
     }
 
     /** 胎压标签刷新：压力（状态色）+温度；state 判定照抄 CarLauncher pc.d() 区间 */

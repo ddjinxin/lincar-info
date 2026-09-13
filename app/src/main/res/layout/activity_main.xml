@@ -216,6 +216,12 @@
             android:layout_marginTop="24dp"
             android:layout_marginBottom="24dp"/>
 
+        <!-- 红点+虚线标注层（车图上层、标签下层） -->
+        <com.jingxin.lincarinfo.TagLineOverlay
+            android:id="@+id/tagLines"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"/>
+
         <!-- 左前门窗 -->
         <LinearLayout
             android:id="@+id/tagLFDw"
@@ -223,6 +229,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="6dp" android:paddingEnd="6dp"
+            android:paddingTop="3dp" android:paddingBottom="3dp"
             android:background="@drawable/bg_tag">
             <TextView android:id="@+id/tvLFDwWho"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -239,6 +247,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="6dp" android:paddingEnd="6dp"
+            android:paddingTop="3dp" android:paddingBottom="3dp"
             android:background="@drawable/bg_tag">
             <TextView android:id="@+id/tvRFDwWho"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -255,6 +265,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="6dp" android:paddingEnd="6dp"
+            android:paddingTop="3dp" android:paddingBottom="3dp"
             android:background="@drawable/bg_tag">
             <TextView android:id="@+id/tvLRDwWho"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -271,6 +283,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="6dp" android:paddingEnd="6dp"
+            android:paddingTop="3dp" android:paddingBottom="3dp"
             android:background="@drawable/bg_tag">
             <TextView android:id="@+id/tvRRDwWho"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -287,6 +301,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="8dp" android:paddingEnd="8dp"
+            android:paddingTop="4dp" android:paddingBottom="4dp"
             android:background="@drawable/bg_tag_tire">
             <TextView android:id="@+id/tvLFTire"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -294,9 +310,6 @@
             <TextView android:id="@+id/tvLFTemp"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-            <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="左前" android:textSize="7sp" android:textColor="#5C7A99"/>
         </LinearLayout>
 
         <!-- 右前胎压 -->
@@ -306,6 +319,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="8dp" android:paddingEnd="8dp"
+            android:paddingTop="4dp" android:paddingBottom="4dp"
             android:background="@drawable/bg_tag_tire">
             <TextView android:id="@+id/tvRFTire"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -313,9 +328,6 @@
             <TextView android:id="@+id/tvRFTemp"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-            <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="右前" android:textSize="7sp" android:textColor="#5C7A99"/>
         </LinearLayout>
 
         <!-- 左后胎压 -->
@@ -325,6 +337,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="8dp" android:paddingEnd="8dp"
+            android:paddingTop="4dp" android:paddingBottom="4dp"
             android:background="@drawable/bg_tag_tire">
             <TextView android:id="@+id/tvLRTire"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -332,9 +346,6 @@
             <TextView android:id="@+id/tvLRTemp"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-            <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="左后" android:textSize="7sp" android:textColor="#5C7A99"/>
         </LinearLayout>
 
         <!-- 右后胎压 -->
@@ -344,6 +355,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
+            android:paddingStart="8dp" android:paddingEnd="8dp"
+            android:paddingTop="4dp" android:paddingBottom="4dp"
             android:background="@drawable/bg_tag_tire">
             <TextView android:id="@+id/tvRRTire"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -351,9 +364,6 @@
             <TextView android:id="@+id/tvRRTemp"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-            <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="右后" android:textSize="7sp" android:textColor="#5C7A99"/>
         </LinearLayout>
 
         <!-- 后备箱/尾门 -->
@@ -363,6 +373,8 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center"
+            android:paddingStart="8dp" android:paddingEnd="8dp"
+            android:paddingTop="4dp" android:paddingBottom="4dp"
             android:background="@drawable/bg_tag">
             <TextView android:id="@+id/tvTrunk"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
