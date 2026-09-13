@@ -28,7 +28,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="P"
-                android:textSize="15sp"
+                android:textSize="20sp"
                 android:textColor="#00E5FF"
                 android:fontFamily="monospace"
                 android:textStyle="bold"
@@ -58,7 +58,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="503km"
-                android:textSize="15sp"
+                android:textSize="20sp"
                 android:textColor="#00FF9D"
                 android:fontFamily="monospace"
                 android:textStyle="bold"
@@ -88,7 +88,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="74,595 km"
-                android:textSize="15sp"
+                android:textSize="20sp"
                 android:textColor="#EAF6FF"
                 android:fontFamily="monospace"
                 android:textStyle="bold"
@@ -105,7 +105,7 @@
 
         <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
 
-        <!-- 机油 -->
+        <!-- 燃油 -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -114,40 +114,11 @@
             android:layout_marginStart="12dp"
             android:layout_marginEnd="12dp">
             <TextView
-                android:id="@+id/tvOil"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="75%"
-                android:textSize="15sp"
-                android:textColor="#00E5FF"
-                android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:shadowColor="#00E5FF"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="机油寿命"
-                android:textSize="7sp"
-                android:textColor="#5C7A99"
-                android:letterSpacing="0.3"/>
-        </LinearLayout>
-
-        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
-
-        <!-- 燃油 -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:layout_marginStart="12dp">
-            <TextView
                 android:id="@+id/tvFuel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="81%"
-                android:textSize="15sp"
+                android:textSize="20sp"
                 android:textColor="#00E5FF"
                 android:fontFamily="monospace"
                 android:textStyle="bold"
@@ -161,46 +132,43 @@
                 android:textColor="#5C7A99"
                 android:letterSpacing="0.3"/>
         </LinearLayout>
-    </LinearLayout>
 
-    <!-- ============ 速度区 (占12%) ============ -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="12">
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+
+        <!-- 机油 -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
-            android:layout_gravity="center">
+            android:layout_marginStart="12dp">
             <TextView
-                android:id="@+id/tvSpeed"
+                android:id="@+id/tvOil"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="0"
-                android:textSize="50sp"
-                android:textColor="#EAF6FF"
+                android:text="75%"
+                android:textSize="20sp"
+                android:textColor="#00E5FF"
                 android:fontFamily="monospace"
                 android:textStyle="bold"
                 android:shadowColor="#00E5FF"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="14"/>
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="KM / H"
+                android:text="机油寿命"
                 android:textSize="7sp"
                 android:textColor="#5C7A99"
-                android:letterSpacing="0.6"/>
+                android:letterSpacing="0.3"/>
         </LinearLayout>
-    </FrameLayout>
+    </LinearLayout>
 
-    <!-- ============ 车图区 (吃剩余 ≈63%) ============ -->
+    <!-- ============ 速度+车图区 (占80%) ============ -->
     <FrameLayout
         android:id="@+id/carZone"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="63">
+        android:layout_weight="80">
 
         <ImageView
             android:id="@+id/ivCar"
@@ -215,6 +183,21 @@
             android:layout_marginEnd="30dp"
             android:layout_marginTop="24dp"
             android:layout_marginBottom="24dp"/>
+
+        <!-- 速度 -->
+        <TextView
+            android:id="@+id/tvSpeed"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0"
+            android:textSize="30sp"
+            android:textColor="#EAF6FF"
+            android:fontFamily="monospace"
+            android:textStyle="bold"
+            android:shadowColor="#00E5FF"
+            android:shadowDx="0" android:shadowDy="0" android:shadowRadius="14"
+            android:layout_gravity="center_horizontal|top"
+            android:layout_marginTop="8dp"/>
 
         <!-- 红点+虚线标注层（车图上层、标签下层） -->
         <com.jingxin.lincarinfo.TagLineOverlay
@@ -371,51 +354,46 @@
             android:id="@+id/tagTrunk"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:minWidth="72dp"
+            android:orientation="vertical"
             android:gravity="center"
             android:paddingStart="8dp" android:paddingEnd="8dp"
             android:paddingTop="4dp" android:paddingBottom="4dp"
             android:background="@drawable/bg_tag">
+            <TextView android:id="@+id/tvTrunkWho"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="后备箱" android:textSize="7sp" android:textColor="#8FA6BD"/>
             <TextView android:id="@+id/tvTrunk"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="后备箱关 · 尾门关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
         </LinearLayout>
     </FrameLayout>
 
-    <!-- ============ 空调卡 (占15%) ============ -->
+    <!-- ============ 空调卡 (占10%) ============ -->
     <LinearLayout
+        android:id="@+id/acCard"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="15"
+        android:layout_weight="10"
         android:orientation="vertical"
-        android:gravity="center_vertical"
+        android:gravity="center"
         android:background="@drawable/bg_card"
-        android:layout_marginStart="10dp"
-        android:layout_marginEnd="10dp"
         android:layout_marginBottom="10dp"
         android:paddingStart="10dp"
         android:paddingEnd="10dp"
         android:paddingTop="6dp"
         android:paddingBottom="6dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="▎空调"
-            android:textSize="8sp"
-            android:textColor="#5C7A99"
-            android:letterSpacing="0.2"
-            android:layout_marginBottom="6dp"/>
-
         <!-- 主驾 / PM2.5 / 副驾 三格 -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="8dp">
+            android:layout_height="match_parent"
+            android:orientation="horizontal">
             <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:orientation="vertical"
                 android:gravity="center"
@@ -435,7 +413,7 @@
 
             <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:orientation="vertical"
                 android:gravity="center"
@@ -455,7 +433,7 @@
 
             <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:orientation="vertical"
                 android:gravity="center"
@@ -469,61 +447,7 @@
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
                     android:text="23.0℃" android:textSize="16sp" android:textColor="#EAF6FF"
                     android:fontFamily="monospace" android:textStyle="bold"/>
-            </LinearLayout>
         </LinearLayout>
-
-        <!-- 空调状态胶囊 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-            <TextView
-                android:id="@+id/tvFan"
-                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:gravity="center"
-                android:text="风量1档" android:textSize="7sp" android:textColor="#8FA6BD"
-                android:background="@drawable/bg_chip" android:padding="4dp"/>
-            <Space android:layout_width="5dp" android:layout_height="1dp"/>
-            <TextView
-                android:id="@+id/tvAc"
-                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:gravity="center"
-                android:text="A/C 关" android:textSize="7sp" android:textColor="#8FA6BD"
-                android:background="@drawable/bg_chip" android:padding="4dp"/>
-            <Space android:layout_width="5dp" android:layout_height="1dp"/>
-            <TextView
-                android:id="@+id/tvCirc"
-                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:gravity="center"
-                android:text="内循环 开" android:textSize="7sp" android:textColor="#00E5FF"
-                android:background="@drawable/bg_chip_on" android:padding="4dp"/>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="5dp">
-            <TextView
-                android:id="@+id/tvIntake"
-                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:gravity="center"
-                android:text="进气 外循环" android:textSize="7sp" android:textColor="#8FA6BD"
-                android:background="@drawable/bg_chip" android:padding="4dp"/>
-            <Space android:layout_width="5dp" android:layout_height="1dp"/>
-            <TextView
-                android:id="@+id/tvSeat"
-                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:gravity="center"
-                android:text="座椅通风 关" android:textSize="7sp" android:textColor="#8FA6BD"
-                android:background="@drawable/bg_chip" android:padding="4dp"/>
-            <Space android:layout_width="5dp" android:layout_height="1dp"/>
-            <TextView
-                android:id="@+id/tvAirLevel"
-                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
-                android:gravity="center"
-                android:text="出风强度 12" android:textSize="7sp" android:textColor="#8FA6BD"
-                android:background="@drawable/bg_chip" android:padding="4dp"/>
         </LinearLayout>
     </LinearLayout>
 

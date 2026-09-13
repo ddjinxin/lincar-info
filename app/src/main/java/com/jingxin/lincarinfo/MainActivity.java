@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.text.SpannableString;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
@@ -175,7 +176,7 @@ public class MainActivity extends Activity {
     private TextView tvLFTire, tvLFTemp, tvRFTire, tvRFTemp, tvLRTire, tvLRTemp, tvRRTire, tvRRTemp;
     private TextView tvLFDw, tvRFDw, tvLRDw, tvRRDw, tvTrunk;
     private TextView tvTempDriver, tvPm, tvTempPassenger;
-    private TextView tvFan, tvAc, tvCirc, tvIntake, tvSeat, tvAirLevel;
+
     private View tagLFDw, tagRFDw, tagLRDw, tagRRDw;
     private View tagLFTire, tagRFTire, tagLRTire, tagRRTire, tagTrunk;
     private ImageView ivCar;
@@ -287,9 +288,7 @@ public class MainActivity extends Activity {
         tvTempDriver = findViewById(R.id.tvTempDriver);
         tvPm = findViewById(R.id.tvPm);
         tvTempPassenger = findViewById(R.id.tvTempPassenger);
-        tvFan = findViewById(R.id.tvFan);   tvAc = findViewById(R.id.tvAc);
-        tvCirc = findViewById(R.id.tvCirc); tvIntake = findViewById(R.id.tvIntake);
-        tvSeat = findViewById(R.id.tvSeat); tvAirLevel = findViewById(R.id.tvAirLevel);
+
         tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
         tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
         tagLFTire = findViewById(R.id.tagLFTire); tagRFTire = findViewById(R.id.tagRFTire);
@@ -301,6 +300,8 @@ public class MainActivity extends Activity {
         bootLog("[UI] findViewById OK");
 
         applyFontScale();
+        scaleBannerByHeight();
+        scaleAcCardByHeight();
         layoutCarTags();
         refreshDisplay();
         bootLog("[UI] 字号缩放+标签定位完成");
@@ -328,13 +329,16 @@ public class MainActivity extends Activity {
 
     // ========== 仪表盘 UI 辅助（V2） ==========
 
-    /** 字号等比缩放：布局按 360dp 基准设计，其他宽度按 屏宽dp/360 缩放全部 TextView 字号 */
+    /** 字号等比缩放：布局按 360dp 基准设计，其他宽度按 屏宽dp/360 缩放全部 TextView 字号。
+     *  横屏(宽>高×1.2)时缩放上限 1.5，防止标签字号过大。banner 由 scaleBannerByHeight 单独处理。 */
     private void applyFontScale() {
         try {
             DisplayMetrics dm = getResources().getDisplayMetrics();
             float scale = dm.widthPixels / dm.density / DESIGN_WIDTH_DP;
+            boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
+            if (landscape && scale > 1.5f) scale = 1.5f;
             bootLog("[UI] 屏宽=" + dm.widthPixels + "px density=" + dm.densityDpi
-                    + " → 字号缩放 " + String.format("%.2f", scale));
+                    + " → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏上限1.5)" : ""));
             View root = findViewById(R.id.root);
             scaleTextSize(root, scale);
         } catch (Throwable e) {
@@ -351,6 +355,101 @@ public class MainActivity extends Activity {
             for (int i = 0; i < g.getChildCount(); i++) scaleTextSize(g.getChildAt(i), scale);
         }
     }
+
+    /** banner 字号：横屏(宽>高×1.2)按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
+    private void scaleBannerByHeight() {
+        final View banner = findViewById(R.id.banner);
+        if (banner == null) return;
+        banner.getViewTreeObserver().addOnGlobalLayoutListener(
+            new ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override public void onGlobalLayout() {
+                    try {
+                        int bh = banner.getHeight();
+                        if (bh <= 0) return;
+                        banner.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                        DisplayMetrics dm = getResources().getDisplayMetrics();
+                        boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
+                        if (landscape) {
+                            float valSize = bh * 0.42f;
+                            float lblSize = bh * 0.15f;
+                            scaleBannerText(banner, valSize, lblSize);
+                            bootLog("[UI] 横屏 banner高=" + bh + "px → 数值" + valSize + "px 标签" + lblSize + "px(按高度)");
+                        } else {
+                            bootLog("[UI] 竖屏 banner高=" + bh + "px → 保持 applyFontScale 宽度缩放");
+                        }
+                    } catch (Throwable e) {
+                        bootLog("[UI] scaleBannerByHeight 失败: " + rootCause(e));
+                        banner.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                    }
+                }
+            });
+    }
+
+    /** 递归设 banner 内 TextView 字号：有 id 的设 valSize，无 id 的设 lblSize */
+    private void scaleBannerText(View v, float valSize, float lblSize) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            float size = (tv.getId() != View.NO_ID) ? valSize : lblSize;
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
+        } else if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) scaleBannerText(g.getChildAt(i), valSize, lblSize);
+        }
+    }
+
+    /** 空调卡字号：横屏(宽>高×1.2)按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
+    private void scaleAcCardByHeight() {
+        final View acCard = findViewById(R.id.acCard);
+        if (acCard == null) return;
+        acCard.getViewTreeObserver().addOnGlobalLayoutListener(
+            new ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override public void onGlobalLayout() {
+                    try {
+                        int ah = acCard.getHeight();
+                        if (ah <= 0) return;
+                        acCard.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                        DisplayMetrics dm = getResources().getDisplayMetrics();
+                        boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
+                        if (landscape) {
+                            android.view.ViewGroup cardOuter = (android.view.ViewGroup) acCard;
+                            android.view.ViewGroup cardRow = (android.view.ViewGroup) cardOuter.getChildAt(0);
+                            // 横屏：三个子区域改为一行显示（标签+数值水平排列）
+                            for (int i = 0; i < cardRow.getChildCount(); i++) {
+                                View child = cardRow.getChildAt(i);
+                                if (child instanceof LinearLayout) {
+                                    LinearLayout zone = (LinearLayout) child;
+                                    zone.setOrientation(LinearLayout.HORIZONTAL);
+                                    // 标签和数值之间加间距
+                                    for (int j = 0; j < zone.getChildCount(); j++) {
+                                        View tv = zone.getChildAt(j);
+                                        if (tv instanceof TextView) {
+                                            TextView t = (TextView) tv;
+                                            if (j > 0) t.setPadding(dip(4), 0, 0, 0);
+                                        }
+                                    }
+                                }
+                            }
+                            // 按子区域实际高度设字号（单行，字号=可用高度）
+                            android.view.ViewGroup zone = (android.view.ViewGroup) cardRow.getChildAt(0);
+                            int zoneH = zone.getHeight();
+                            if (zoneH > 0) {
+                                int usable = zoneH - dip(11);
+                                float valSize = usable * 0.7f;   // 数值占可用高度 70%
+                                float lblSize = usable * 0.35f;  // 标签占 35%
+                                scaleBannerText(acCard, valSize, lblSize);
+                                bootLog("[UI] 横屏 acCard高=" + ah + " zoneH=" + zoneH + " → 一行显示 数值" + valSize + "px 标签" + lblSize + "px");
+                            }
+                        } else {
+                            bootLog("[UI] 竖屏 acCard高=" + ah + "px → 保持 applyFontScale 宽度缩放");
+                        }
+                    } catch (Throwable e) {
+                        bootLog("[UI] scaleAcCardByHeight 失败: " + rootCause(e));
+                        acCard.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                    }
+                }
+            });
+    }
+
 
     /**
      * 车图区标签定位：锚点相对「车体实际矩形」+ 固定外扩间距。
@@ -390,33 +489,57 @@ public class MainActivity extends Activity {
     private void positionCarTags() {
         int zw = carZone.getWidth(), zh = carZone.getHeight();
         if (zw <= 0 || zh <= 0) return;
-        bootLog("[UI] carZone=" + zw + "x" + zh + " 等间距环绕定位");
+        bootLog("[UI] carZone=" + zw + "x" + zh + " 镜像对称定位");
 
-        // —— 等间距定位方案 ——
-        // 胎压四角位置固定（保持现状）：left/right 14%，前胎压 top 9%、后胎压 bottom 12%
-        // 每侧 4 个标签（前胎压→前门窗→后门窗→后胎压）垂直中心等间距
+        // 横屏时增大 ImageView margin，使车图缩到较小边的 90%
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
+        if (landscape && ivCar != null) {
+            // 原始 margin 30dp/24dp，横屏额外加 5% 空间（约 (100%-90%)/2 = 5%）
+            int extraW = Math.round(zw * 0.05f);
+            int extraH = Math.round(zh * 0.05f);
+            android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) ivCar.getLayoutParams();
+            lp.setMargins(dip(30) + extraW, dip(24) + extraH, dip(30) + extraW, dip(24) + extraH);
+            ivCar.setLayoutParams(lp);
+        }
+
         float tireEdgeX = zw * 0.14f;       // 胎压标签离左/右边缘 14%
         float dwEdgeX = zw * 0.06f;        // 门窗标签离左/右边缘 6%
-        float tireTopY = zh * 0.09f;       // 前胎压 y（顶部锚）
-        float tireBotY = zh * 0.88f;       // 后胎压 y（底部锚，bottom 12%）
 
-        // 胎压四角（位置保持不变）
-        placeCornerTag(tagLFTire, tireEdgeX, tireTopY, true, false);   // 左上角
-        placeCornerTag(tagRFTire, zw - tireEdgeX, tireTopY, false, false); // 右上角
-        placeCornerTag(tagLRTire, tireEdgeX, tireBotY, true, true);    // 左下角
-        placeCornerTag(tagRRTire, zw - tireEdgeX, tireBotY, false, true); // 右下角
+        // 对称轴：前后门窗标注点中点 y=52.5%（相对车图 fitH）
+        float[] r = carImgRect(zw, zh);
+        float axisY = r[1] + r[3] * 0.525f;
 
-        // 门窗标签：在前后胎压之间垂直等间距分布（前门窗=前胎压中心+step，后门窗=+2step）
-        placeBetweenTires(tagLFTire, tagLFDw, tagLRDw, tagLRTire, tireTopY, tireBotY, dwEdgeX, true);
-        placeBetweenTires(tagRFTire, tagRFDw, tagRRDw, tagRRTire, tireTopY, tireBotY, zw - dwEdgeX, false);
+        // 前胎压标签：跟随车图顶部，留一定间距
+        float tireTopY = r[1] - dip(6);
+        placeCornerTag(tagLFTire, tireEdgeX, tireTopY, true, false);
+        placeCornerTag(tagRFTire, zw - tireEdgeX, tireTopY, false, false);
 
-        // 后备箱：车图底部居中
+        // 左侧：前胎压中心 → 镜像后胎压中心 → 等间距放门窗
+        float cFL = tireTopY + (tagLFTire != null ? tagLFTire.getHeight() : 0) / 2f;
+        float cRL = 2f * axisY - cFL;
+        centerTagAt(tagLRTire, tireEdgeX, cRL, true);
+        float stepL = (cRL - cFL) / 3f;
+        centerTagAt(tagLFDw, dwEdgeX, cFL + stepL, true);
+        centerTagAt(tagLRDw, dwEdgeX, cFL + stepL * 2f, true);
+
+        // 右侧：同理
+        float cFR = tireTopY + (tagRFTire != null ? tagRFTire.getHeight() : 0) / 2f;
+        float cRR = 2f * axisY - cFR;
+        centerTagAt(tagRRTire, zw - tireEdgeX, cRR, false);
+        float stepR = (cRR - cFR) / 3f;
+        centerTagAt(tagRFDw, zw - dwEdgeX, cFR + stepR, false);
+        centerTagAt(tagRRDw, zw - dwEdgeX, cFR + stepR * 2f, false);
+
+        // 后备箱：水平中心对齐车图中心，垂直与后胎压标签中心对齐
         if (tagTrunk != null) {
             int w = tagTrunk.getWidth(), h = tagTrunk.getHeight();
             android.widget.FrameLayout.LayoutParams lp =
                     (android.widget.FrameLayout.LayoutParams) tagTrunk.getLayoutParams();
-            lp.leftMargin = Math.round((zw - w) / 2f);
-            lp.topMargin = Math.round(zh - h - zh * 0.06f);
+            // 水平中心对齐车图中心（非 carZone 中心），使连接线垂直
+            float carCenterX = r[0] + r[2] / 2f;
+            lp.leftMargin = Math.round(carCenterX - w / 2f);
+            lp.topMargin = Math.round(cRL - h / 2f);
             tagTrunk.setLayoutParams(lp);
             tagTrunk.bringToFront();
         }
@@ -430,13 +553,21 @@ public class MainActivity extends Activity {
         linkTagDots();
     }
 
-    /** 算车图 fitCenter 显示矩形（3552:4736 比例），返回 left/top/fitW/fitH */
+
+    /** 算车图 fitCenter 显示矩形（3552:4736 比例），返回 left/top/fitW/fitH。
+     *  横屏(宽>高×1.2)时按较小边的 90% 缩放，给标签留更多空间。 */
     private float[] carImgRect(int zw, int zh) {
         float ratio = 4736f / 3552f; // 高/宽
         int mL = dip(30) + dip(6), mR = dip(30) + dip(6);
         int mT = dip(24) + dip(6), mB = dip(24) + dip(6);
         int availW = Math.max(1, zw - mL - mR);
         int availH = Math.max(1, zh - mT - mB);
+        // 横屏按较小边的 90% 限制
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        if (dm.widthPixels > dm.heightPixels * 1.2f) {
+            availW = (int) (availW * 0.9f);
+            availH = (int) (availH * 0.9f);
+        }
         float fitW, fitH;
         if (availW * ratio >= availH) { fitH = availH; fitW = fitH / ratio; }
         else { fitW = availW; fitH = fitW * ratio; }
@@ -1920,10 +2051,25 @@ public class MainActivity extends Activity {
 
         // ---- 顶部横幅 ----
         tvGear.setText(evGear == null ? "--" : gearStr(getInt(evGear)));
-        tvRange.setText(evRange == null ? "--" : String.format("%.0f%s", Math.max(range, 0), mileageUnit));
-        tvOdo.setText(evOdometer == null ? "--"
-                : (odometer >= 0 && odometer != 1.6777215E7f)
-                ? String.format("%,.0f %s", odometer, mileageUnit) : "--");
+        if (evRange == null) {
+            tvRange.setText("--");
+        } else {
+            String num = String.format("%.0f", Math.max(range, 0));
+            SpannableString s = new SpannableString(num + mileageUnit);
+            s.setSpan(new android.text.style.AbsoluteSizeSpan(dip(10), true), num.length(), s.length(),
+                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+            tvRange.setText(s);
+        }
+        if (evOdometer == null || odometer < 0 || odometer == 1.6777215E7f) {
+            tvOdo.setText("--");
+        } else {
+            String num = String.format("%,.0f", odometer);
+            String full = num + " " + mileageUnit;
+            SpannableString s = new SpannableString(full);
+            s.setSpan(new android.text.style.AbsoluteSizeSpan(dip(10), true), num.length() + 1, full.length(),
+                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+            tvOdo.setText(s);
+        }
         tvOil.setText(evOilLife == null ? "--" : oilLife + "%");
         tvFuel.setText(evFuelPct == null ? "--" : String.format("%.0f%%", Math.max(fuelPct, 0)));
 
@@ -1942,7 +2088,7 @@ public class MainActivity extends Activity {
         updateDoorTag(tagLRDw, tvLRDw, evDoorLR, winLeftRear);
         updateDoorTag(tagRRDw, tvRRDw, evDoorRR, winRightRear);
         boolean trunkOpen = getInt(evTrunkIn) > 0 || getInt(evTrunkOut) > 0;
-        tvTrunk.setText(trunkOpen ? "后备箱开 · 尾门开" : "后备箱关 · 尾门关");
+        tvTrunk.setText(trunkOpen ? "开" : "关");
         tvTrunk.setTextColor(trunkOpen ? 0xFFFF5A5A : 0xFF00FF9D);
         android.graphics.drawable.GradientDrawable gdTrunk = new android.graphics.drawable.GradientDrawable();
         gdTrunk.setColor(trunkOpen ? 0x40FF5A5A : 0xD9060A14);
@@ -1960,25 +2106,7 @@ public class MainActivity extends Activity {
         tvPm.setText(aarPmNow >= 0 ? String.valueOf(aarPmNow) : "--");
         tvPm.setTextColor(pmColor(aarPmNow));
 
-        int fan = parseHvacIntStatic(hvacLatestValue(16388));
-        tvFan.setText("风量 " + (fan == 15 ? "最大" : fan >= 0 ? fan + "档" : "--"));
 
-        int ac = parseHvacIntStatic(hvacLatestValue(16393));
-        setChip(tvAc, "A/C " + (ac < 0 ? "--" : ac == 1 ? "开" : "关"), ac == 1);
-
-        int circ = parseHvacIntStatic(hvacLatestValue(16395));
-        setChip(tvCirc, "内循环 " + (circ < 0 ? "--" : circ == 1 ? "开" : "关"), circ == 1);
-
-        int intake = parseHvacIntStatic(hvacLatestValue(20487));
-        tvIntake.setText("进气 " + (intake < 0 ? "--" : intake == 1 ? "内循环" : "外循环"));
-        setChipBg(tvIntake, intake == 1);
-
-        int seat = parseHvacIntStatic(hvacAreaValue(20481, "area1"));
-        setChip(tvSeat, "座椅通风 " + (seat < 0 ? "--" : seat == 0 ? "关" : "开"), seat == 1);
-
-        int airLevel = parseHvacIntStatic(hvacLatestValue(20513));
-        tvAirLevel.setText("出风强度 " + (airLevel < 0 ? "--" : airLevel));
-        setChipBg(tvAirLevel, false);
 
         // 标注点颜色同步：正常青、异常红（胎压<200kPa、门窗开、后备箱开）
         linkTagDots();
