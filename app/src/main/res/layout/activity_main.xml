@@ -190,7 +190,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="0"
-            android:textSize="30sp"
+            android:textSize="50sp"
             android:textColor="#EAF6FF"
             android:fontFamily="monospace"
             android:textStyle="bold"
@@ -205,170 +205,59 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"/>
 
-        <!-- 左前门窗 -->
-        <LinearLayout
+        <!-- 左前门窗（圆形：异常才显示，渐隐渐显） -->
+        <com.jingxin.lincarinfo.DoorCircleView
             android:id="@+id/tagLFDw"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="6dp" android:paddingEnd="6dp"
-            android:paddingTop="3dp" android:paddingBottom="3dp"
-            android:background="@drawable/bg_tag">
-            <TextView android:id="@+id/tvLFDwWho"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="左前" android:textSize="7sp" android:textColor="#8FA6BD"/>
-            <TextView android:id="@+id/tvLFDw"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="门开 窗开" android:textSize="8sp" android:textColor="#FF5A5A" android:textStyle="bold"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
         <!-- 右前门窗 -->
-        <LinearLayout
+        <com.jingxin.lincarinfo.DoorCircleView
             android:id="@+id/tagRFDw"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="6dp" android:paddingEnd="6dp"
-            android:paddingTop="3dp" android:paddingBottom="3dp"
-            android:background="@drawable/bg_tag">
-            <TextView android:id="@+id/tvRFDwWho"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="右前" android:textSize="7sp" android:textColor="#8FA6BD"/>
-            <TextView android:id="@+id/tvRFDw"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="门关 窗关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
         <!-- 左后门窗 -->
-        <LinearLayout
+        <com.jingxin.lincarinfo.DoorCircleView
             android:id="@+id/tagLRDw"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="6dp" android:paddingEnd="6dp"
-            android:paddingTop="3dp" android:paddingBottom="3dp"
-            android:background="@drawable/bg_tag">
-            <TextView android:id="@+id/tvLRDwWho"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="左后" android:textSize="7sp" android:textColor="#8FA6BD"/>
-            <TextView android:id="@+id/tvLRDw"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="门关 窗关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
         <!-- 右后门窗 -->
-        <LinearLayout
+        <com.jingxin.lincarinfo.DoorCircleView
             android:id="@+id/tagRRDw"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="6dp" android:paddingEnd="6dp"
-            android:paddingTop="3dp" android:paddingBottom="3dp"
-            android:background="@drawable/bg_tag">
-            <TextView android:id="@+id/tvRRDwWho"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="右后" android:textSize="7sp" android:textColor="#8FA6BD"/>
-            <TextView android:id="@+id/tvRRDw"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="门关 窗关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
-        <!-- 左前胎压 -->
-        <LinearLayout
+        <!-- 左前胎压（圆形：值+单位两行，呼吸边框） -->
+        <com.jingxin.lincarinfo.TireCircleView
             android:id="@+id/tagLFTire"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="8dp" android:paddingEnd="8dp"
-            android:paddingTop="4dp" android:paddingBottom="4dp"
-            android:background="@drawable/bg_tag_tire">
-            <TextView android:id="@+id/tvLFTire"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="220 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
-            <TextView android:id="@+id/tvLFTemp"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
         <!-- 右前胎压 -->
-        <LinearLayout
+        <com.jingxin.lincarinfo.TireCircleView
             android:id="@+id/tagRFTire"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="8dp" android:paddingEnd="8dp"
-            android:paddingTop="4dp" android:paddingBottom="4dp"
-            android:background="@drawable/bg_tag_tire">
-            <TextView android:id="@+id/tvRFTire"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="220 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
-            <TextView android:id="@+id/tvRFTemp"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
         <!-- 左后胎压 -->
-        <LinearLayout
+        <com.jingxin.lincarinfo.TireCircleView
             android:id="@+id/tagLRTire"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="8dp" android:paddingEnd="8dp"
-            android:paddingTop="4dp" android:paddingBottom="4dp"
-            android:background="@drawable/bg_tag_tire">
-            <TextView android:id="@+id/tvLRTire"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="220 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
-            <TextView android:id="@+id/tvLRTemp"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
         <!-- 右后胎压 -->
-        <LinearLayout
+        <com.jingxin.lincarinfo.TireCircleView
             android:id="@+id/tagRRTire"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="8dp" android:paddingEnd="8dp"
-            android:paddingTop="4dp" android:paddingBottom="4dp"
-            android:background="@drawable/bg_tag_tire">
-            <TextView android:id="@+id/tvRRTire"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="225 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
-            <TextView android:id="@+id/tvRRTemp"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
 
-        <!-- 后备箱/尾门 -->
-        <LinearLayout
+        <!-- 后备箱/尾门（圆形：开时才显示，渐隐渐显） -->
+        <com.jingxin.lincarinfo.DoorCircleView
             android:id="@+id/tagTrunk"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="72dp"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:paddingStart="8dp" android:paddingEnd="8dp"
-            android:paddingTop="4dp" android:paddingBottom="4dp"
-            android:background="@drawable/bg_tag">
-            <TextView android:id="@+id/tvTrunkWho"
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:gravity="center"
-                android:text="后备箱" android:textSize="7sp" android:textColor="#8FA6BD"/>
-            <TextView android:id="@+id/tvTrunk"
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:gravity="center"
-                android:text="关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
-        </LinearLayout>
+            android:layout_height="wrap_content" />
     </FrameLayout>
 
     <!-- ============ 空调卡 (占10%) ============ -->

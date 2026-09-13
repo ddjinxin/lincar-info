@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">LinCarInfo</string>
+    <string name="app_name">林肯车机信息</string>
     <style name="Theme.LinCarInfo" parent="@android:style/Theme.DeviceDefault.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowBackground">#060A14</item>

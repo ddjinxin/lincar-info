@@ -173,12 +173,11 @@ public class MainActivity extends Activity {
     private static final float DESIGN_WIDTH_DP = 360f;   // 效果图 720px@2x → 360dp 基准
 
     private TextView tvGear, tvRange, tvOdo, tvOil, tvFuel, tvSpeed;
-    private TextView tvLFTire, tvLFTemp, tvRFTire, tvRFTemp, tvLRTire, tvLRTemp, tvRRTire, tvRRTemp;
-    private TextView tvLFDw, tvRFDw, tvLRDw, tvRRDw, tvTrunk;
     private TextView tvTempDriver, tvPm, tvTempPassenger;
 
-    private View tagLFDw, tagRFDw, tagLRDw, tagRRDw;
-    private View tagLFTire, tagRFTire, tagLRTire, tagRRTire, tagTrunk;
+    private DoorCircleView tagLFDw, tagRFDw, tagLRDw, tagRRDw;
+    private TireCircleView tagLFTire, tagRFTire, tagLRTire, tagRRTire;
+    private DoorCircleView tagTrunk;
     private ImageView ivCar;
     private View carZone;
     private TagLineOverlay tagLines;
@@ -272,37 +271,7 @@ public class MainActivity extends Activity {
             throw e;
         }
 
-        tvGear = findViewById(R.id.tvGear);
-        tvRange = findViewById(R.id.tvRange);
-        tvOdo = findViewById(R.id.tvOdo);
-        tvOil = findViewById(R.id.tvOil);
-        tvFuel = findViewById(R.id.tvFuel);
-        tvSpeed = findViewById(R.id.tvSpeed);
-        tvLFTire = findViewById(R.id.tvLFTire);  tvLFTemp = findViewById(R.id.tvLFTemp);
-        tvRFTire = findViewById(R.id.tvRFTire);  tvRFTemp = findViewById(R.id.tvRFTemp);
-        tvLRTire = findViewById(R.id.tvLRTire);  tvLRTemp = findViewById(R.id.tvLRTemp);
-        tvRRTire = findViewById(R.id.tvRRTire);  tvRRTemp = findViewById(R.id.tvRRTemp);
-        tvLFDw = findViewById(R.id.tvLFDw);      tvRFDw = findViewById(R.id.tvRFDw);
-        tvLRDw = findViewById(R.id.tvLRDw);      tvRRDw = findViewById(R.id.tvRRDw);
-        tvTrunk = findViewById(R.id.tvTrunk);
-        tvTempDriver = findViewById(R.id.tvTempDriver);
-        tvPm = findViewById(R.id.tvPm);
-        tvTempPassenger = findViewById(R.id.tvTempPassenger);
-
-        tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
-        tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
-        tagLFTire = findViewById(R.id.tagLFTire); tagRFTire = findViewById(R.id.tagRFTire);
-        tagLRTire = findViewById(R.id.tagLRTire); tagRRTire = findViewById(R.id.tagRRTire);
-        tagTrunk = findViewById(R.id.tagTrunk);
-        ivCar = findViewById(R.id.ivCar);
-        carZone = findViewById(R.id.carZone);
-        tagLines = findViewById(R.id.tagLines);
-        bootLog("[UI] findViewById OK");
-
-        applyFontScale();
-        scaleBannerByHeight();
-        scaleAcCardByHeight();
-        layoutCarTags();
+        initUi();
         refreshDisplay();
         bootLog("[UI] 字号缩放+标签定位完成");
 
@@ -336,9 +305,9 @@ public class MainActivity extends Activity {
             DisplayMetrics dm = getResources().getDisplayMetrics();
             float scale = dm.widthPixels / dm.density / DESIGN_WIDTH_DP;
             boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
-            if (landscape && scale > 1.5f) scale = 1.5f;
+            if (landscape) scale = 1.0f;
             bootLog("[UI] 屏宽=" + dm.widthPixels + "px density=" + dm.densityDpi
-                    + " → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏上限1.5)" : ""));
+                    + " → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏不放大)" : ""));
             View root = findViewById(R.id.root);
             scaleTextSize(root, scale);
         } catch (Throwable e) {
@@ -397,6 +366,7 @@ public class MainActivity extends Activity {
         }
     }
 
+
     /** 空调卡字号：横屏(宽>高×1.2)按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
     private void scaleAcCardByHeight() {
         final View acCard = findViewById(R.id.acCard);
@@ -453,7 +423,7 @@ public class MainActivity extends Activity {
 
     /**
      * 车图区标签定位：锚点相对「车体实际矩形」+ 固定外扩间距。
-     * 原理：fitCenter 缩放后车图矩形可算出（3552:4736 比例固定），
+     * 原理：fitCenter 缩放后车图矩形可算出（1000:1333 比例固定，4:3），
      * 车体在图内范围（像素分析实锚）：x 21.9%~78.0%、y 11.4%~88.7%。
      * 换算出车体矩形后，标签按"车体外缘外扩 gap"定位——
      * 任意屏宽比例下标签都围绕车体、保持呼吸距离，不挤不压。
@@ -554,10 +524,10 @@ public class MainActivity extends Activity {
     }
 
 
-    /** 算车图 fitCenter 显示矩形（3552:4736 比例），返回 left/top/fitW/fitH。
+    /** 算车图 fitCenter 显示矩形（1000:1333 比例，4:3），返回 left/top/fitW/fitH。
      *  横屏(宽>高×1.2)时按较小边的 90% 缩放，给标签留更多空间。 */
     private float[] carImgRect(int zw, int zh) {
-        float ratio = 4736f / 3552f; // 高/宽
+        float ratio = 1333f / 1000f; // 高/宽
         int mL = dip(30) + dip(6), mR = dip(30) + dip(6);
         int mT = dip(24) + dip(6), mB = dip(24) + dip(6);
         int availW = Math.max(1, zw - mL - mR);
@@ -593,10 +563,10 @@ public class MainActivity extends Activity {
 
         tagLines.clear();
         // 胎压 4 点 → 四轮胎心（异常=压力<200kPa）
-        tagLines.setLink(tireLX, tireFrontY, tagLFTire, tireAlert(tireData.get(1)));
-        tagLines.setLink(tireRX, tireFrontY, tagRFTire, tireAlert(tireData.get(2)));
-        tagLines.setLink(tireLX, tireRearY, tagLRTire, tireAlert(tireData.get(4)));
-        tagLines.setLink(tireRX, tireRearY, tagRRTire, tireAlert(tireData.get(8)));
+        tagLines.setLink(tireLX, tireFrontY, tagLFTire, tireAlert(tireData.get(1)), true);
+        tagLines.setLink(tireRX, tireFrontY, tagRFTire, tireAlert(tireData.get(2)), true);
+        tagLines.setLink(tireLX, tireRearY, tagLRTire, tireAlert(tireData.get(4)), true);
+        tagLines.setLink(tireRX, tireRearY, tagRRTire, tireAlert(tireData.get(8)), true);
         // 门窗 4 点 → 车体左右边缘车门处（异常=门开或窗开）
         tagLines.setLink(bodyL, doorFrontY, tagLFDw, doorAlert(evDoorLB, winDriver));
         tagLines.setLink(bodyR, doorFrontY, tagRFDw, doorAlert(evDoorRB, winPassenger));
@@ -688,7 +658,7 @@ public class MainActivity extends Activity {
         evDoorLB = mockEvent(SENSOR_DOOR_LB, new int[]{1});               // 左前门开
         evDoorRB = mockEvent(SENSOR_DOOR_RB, new int[]{0});
         evDoorLR = mockEvent(SENSOR_DOOR_LR, new int[]{0});
-        evDoorRR = mockEvent(SENSOR_DOOR_RR, new int[]{0});
+        evDoorRR = mockEvent(SENSOR_DOOR_RR, new int[]{1});               // 右后门开
         evTrunkIn = mockEvent(SENSOR_TRUNK_IN, new int[]{0});
         evTrunkOut = mockEvent(SENSOR_DOOR_TRUNK_OUT, new int[]{0});
         // 四轮胎压 220/220/220/225 kPa、胎温 19.5℃
@@ -745,6 +715,130 @@ public class MainActivity extends Activity {
     @Override protected void onResume() { super.onResume(); bootLog("[生命周期] onResume"); }
     @Override protected void onPause() { super.onPause(); bootLog("[生命周期] onPause"); }
     @Override protected void onStop() { super.onStop(); bootLog("[生命周期] onStop"); }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        bootLog("[UI] onConfigurationChanged — 重新布局");
+        setContentView(R.layout.activity_main);
+        initUi();
+        refreshDisplay();
+    }
+
+    /** 进入画中画模式 */
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26 && checkPiPSupported()) {
+                enterPictureInPictureMode();
+                bootLog("[PiP] 进入画中画模式");
+            }
+        } catch (Throwable e) {
+            bootLog("[PiP] 进入画中画失败: " + rootCause(e));
+        }
+    }
+
+    /** 画中画模式变化 */
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPiP, android.content.res.Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPiP, newConfig);
+        bootLog("[PiP] " + (isInPiP ? "已进入" : "已退出") + "画中画");
+    }
+
+    /** 检查是否支持画中画 */
+    private boolean checkPiPSupported() {
+        try {
+            if (!getPackageManager().hasSystemFeature("android.software.picture_in_picture"))
+                return false;
+            // 部分车机 hasSystemFeature 返回 true 但实际不支持，
+            // 再检查 ActivityInfo 是否声明了 supportsPictureInPicture
+            android.content.pm.ActivityInfo ai = getPackageManager()
+                    .getActivityInfo(new android.content.ComponentName(getPackageName(), getClass().getName()), 0);
+            // supportsPictureInPicture 属性在 API 24+ 编译，但常量名因 API level 差异用反射取
+            try {
+                java.lang.reflect.Field f = android.content.pm.ActivityInfo.class.getField("supportsPictureInPicture");
+                return f.getBoolean(ai);
+            } catch (NoSuchFieldException nsf) {
+                // 退而求其次：FLAG_SUPPORTS_PICTURE_IN_PICTURE 不存在时，信任 hasSystemFeature
+                return true;
+            }
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /** 安全加载车图：用 inSampleSize 降采样，防 density 缩放后 bitmap 过大崩溃 */
+    private void safeLoadCarImage() {
+        if (ivCar == null) return;
+        try {
+            // 先量原图边界
+            android.graphics.BitmapFactory.Options opt = new android.graphics.BitmapFactory.Options();
+            opt.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeResource(getResources(), R.drawable.car_top, opt);
+            int bw = opt.outWidth, bh = opt.outHeight;
+            bootLog("[UI] 车图原始: " + bw + "x" + bh);
+
+            // Canvas 最大 bitmap 约 100MB（保守取 80MB → 2000万像素）
+            // 算需要降采样到多少
+            DisplayMetrics dm = getResources().getDisplayMetrics();
+            float density = dm.density;
+            int scaledW = Math.round(bw * density);
+            int scaledH = Math.round(bh * density);
+            long bitmapBytes = (long) scaledW * scaledH * 4;
+            bootLog("[UI] 车图 density=" + density + " 缩放后=" + scaledW + "x" + scaledH + "=" + (bitmapBytes / 1048576) + "MB");
+
+            int sampleSize = 1;
+            while ((long)(bw / sampleSize) * (bh / sampleSize) * 4 * (long)(density) * (long)(density) > 80L * 1024 * 1024) {
+                sampleSize *= 2;
+            }
+            if (sampleSize > 1) {
+                bootLog("[UI] 车图降采样 sampleSize=" + sampleSize);
+            }
+
+            // 加载降采样后的 bitmap
+            opt = new android.graphics.BitmapFactory.Options();
+            opt.inSampleSize = sampleSize;
+            opt.inScaled = false;  // 不按 density 缩放
+            android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeResource(
+                    getResources(), R.drawable.car_top, opt);
+            if (bmp != null) {
+                ivCar.setImageBitmap(bmp);
+                bootLog("[UI] 车图加载完成: " + bmp.getWidth() + "x" + bmp.getHeight());
+            }
+        } catch (Throwable e) {
+            bootLog("[UI] 车图安全加载失败: " + rootCause(e));
+        }
+    }
+
+    /** UI 初始化：findViewById + 字号缩放 + 标签定位（onCreate 和 onConfigurationChanged 共用） */
+    private void initUi() {
+        tvGear = findViewById(R.id.tvGear);
+        tvRange = findViewById(R.id.tvRange);
+        tvOdo = findViewById(R.id.tvOdo);
+        tvOil = findViewById(R.id.tvOil);
+        tvFuel = findViewById(R.id.tvFuel);
+        tvSpeed = findViewById(R.id.tvSpeed);
+        tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
+        tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
+        tvTempDriver = findViewById(R.id.tvTempDriver);
+        tvPm = findViewById(R.id.tvPm);
+        tvTempPassenger = findViewById(R.id.tvTempPassenger);
+        tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
+        tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
+        tagLFTire = findViewById(R.id.tagLFTire); tagRFTire = findViewById(R.id.tagRFTire);
+        tagLRTire = findViewById(R.id.tagLRTire); tagRRTire = findViewById(R.id.tagRRTire);
+        tagTrunk = findViewById(R.id.tagTrunk);
+        ivCar = findViewById(R.id.ivCar);
+        carZone = findViewById(R.id.carZone);
+        tagLines = findViewById(R.id.tagLines);
+        safeLoadCarImage();
+        applyFontScale();
+        scaleBannerByHeight();
+        scaleAcCardByHeight();
+        layoutCarTags();
+    }
 
     @Override
     protected void onDestroy() {
@@ -2063,10 +2157,10 @@ public class MainActivity extends Activity {
         if (evOdometer == null || odometer < 0 || odometer == 1.6777215E7f) {
             tvOdo.setText("--");
         } else {
-            String num = String.format("%,.0f", odometer);
-            String full = num + " " + mileageUnit;
+            String num = String.format("%.0f", odometer);
+            String full = num + mileageUnit;
             SpannableString s = new SpannableString(full);
-            s.setSpan(new android.text.style.AbsoluteSizeSpan(dip(10), true), num.length() + 1, full.length(),
+            s.setSpan(new android.text.style.AbsoluteSizeSpan(dip(10), true), num.length(), full.length(),
                     SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
             tvOdo.setText(s);
         }
@@ -2076,25 +2170,19 @@ public class MainActivity extends Activity {
         // ---- 速度 ----
         tvSpeed.setText(evSpeed == null ? "--" : String.format("%.0f", Math.max(speed, 0)));
 
-        // ---- 四轮胎压 ----
-        updateTireTag(tvLFTire, tvLFTemp, tireData.get(1));
-        updateTireTag(tvRFTire, tvRFTemp, tireData.get(2));
-        updateTireTag(tvLRTire, tvLRTemp, tireData.get(4));
-        updateTireTag(tvRRTire, tvRRTemp, tireData.get(8));
+        // ---- 四轮胎压（圆形标签：值+单位，呼吸边框） ----
+        updateTireCircle(tagLFTire, tireData.get(1));
+        updateTireCircle(tagRFTire, tireData.get(2));
+        updateTireCircle(tagLRTire, tireData.get(4));
+        updateTireCircle(tagRRTire, tireData.get(8));
 
         // ---- 门窗（门+窗合显，任一开整框变红） ----
-        updateDoorTag(tagLFDw, tvLFDw, evDoorLB, winDriver);
-        updateDoorTag(tagRFDw, tvRFDw, evDoorRB, winPassenger);
-        updateDoorTag(tagLRDw, tvLRDw, evDoorLR, winLeftRear);
-        updateDoorTag(tagRRDw, tvRRDw, evDoorRR, winRightRear);
+        updateDoorCircle(tagLFDw, evDoorLB, winDriver);
+        updateDoorCircle(tagRFDw, evDoorRB, winPassenger);
+        updateDoorCircle(tagLRDw, evDoorLR, winLeftRear);
+        updateDoorCircle(tagRRDw, evDoorRR, winRightRear);
         boolean trunkOpen = getInt(evTrunkIn) > 0 || getInt(evTrunkOut) > 0;
-        tvTrunk.setText(trunkOpen ? "开" : "关");
-        tvTrunk.setTextColor(trunkOpen ? 0xFFFF5A5A : 0xFF00FF9D);
-        android.graphics.drawable.GradientDrawable gdTrunk = new android.graphics.drawable.GradientDrawable();
-        gdTrunk.setColor(trunkOpen ? 0x40FF5A5A : 0xD9060A14);
-        gdTrunk.setStroke(dip(1), trunkOpen ? 0xFFFF5A5A : 0x5900E5FF);
-        gdTrunk.setCornerRadius(dip(6));
-        tagTrunk.setBackground(gdTrunk);
+        if (tagTrunk != null) tagTrunk.updateTrunk(trunkOpen);
 
         // ---- 空调卡 ----
         // 温度双区：area1=主驾 area4=副驾（16385）
@@ -2103,7 +2191,7 @@ public class MainActivity extends Activity {
         tvTempDriver.setText(tempDriver == null ? "--" : tempDriver + "℃");
         tvTempPassenger.setText(tempPassenger == null ? tempDriver == null ? "--" : tempDriver + "℃"
                 : tempPassenger + "℃");   // 单区车机：副驾跟主驾
-        tvPm.setText(aarPmNow >= 0 ? String.valueOf(aarPmNow) : "--");
+        tvPm.setText(aarPmNow >= 0 ? aarPmNow + " μg/m³" : "--");
         tvPm.setTextColor(pmColor(aarPmNow));
 
 
@@ -2112,39 +2200,41 @@ public class MainActivity extends Activity {
         linkTagDots();
     }
 
-    /** 胎压标签刷新：压力（状态色）+温度；state 判定照抄 CarLauncher pc.d() 区间 */
-    private void updateTireTag(TextView tvPressure, TextView tvTemp, TireData td) {
+    /** 胎压圆形标签刷新：值+单位+状态色（驱动呼吸节奏），不显示温度；
+     *  state 判定照抄 CarLauncher pc.d() 区间 */
+    private void updateTireCircle(TireCircleView v, TireData td) {
+        if (v == null) return;
         if (td == null) {
-            tvPressure.setText("-- kPa");
-            tvTemp.setText("--");
+            v.update("--", "kPa", TireCircleView.COLOR_INVALID, false);
             return;
         }
-        tvPressure.setText(pressureStr(td.pressure));
         int color;
-        if (td.pressure >= 65533f) color = 0xFF5C7A99;          // 无效值灰
-        else if (td.state > 250) color = 0xFFFF5A5A;            // 异常红
-        else if (td.state > 150) color = 0xFFFFB020;            // 高压琥珀
-        else if (td.state > 75) color = 0xFFFFB020;             // 低压琥珀
-        else color = 0xFF00FF9D;                                // 正常绿
-        tvPressure.setTextColor(color);
-        tvTemp.setText(td.temp >= 65533f ? "--" : String.format("%.1f℃", td.temp));
+        boolean alert;
+        if (td.pressure >= 65533f) {
+            color = TireCircleView.COLOR_INVALID; alert = false;   // 无效值灰
+        } else if (td.state > 250) {
+            color = TireCircleView.COLOR_ALERT; alert = true;      // 异常红
+        } else if (td.state > 150 || td.state > 75) {
+            color = TireCircleView.COLOR_WARN; alert = false;      // 高压/低压琥珀
+        } else {
+            color = TireCircleView.COLOR_OK; alert = false;         // 正常绿
+        }
+        v.update(pressureNum(td.pressure), tireUnit, color, alert);
     }
 
-    /** 门窗标签刷新：门+窗各一态，任一开 → 文本红+整框红色调背景 */
-    private void updateDoorTag(View tag, TextView tv, Object doorEv, int winState) {
+    /** 胎压数值（不带单位）：pressureStr 的拆分版，圆形里单位独立一行 */
+    private String pressureNum(float raw) {
+        String s = pressureStr(raw);
+        int cut = s.lastIndexOf(tireUnit);
+        return cut > 0 ? s.substring(0, cut) : s;   // 未知单位双显时整体作数值
+    }
+
+    /** 门窗圆形标签刷新：传入门窗状态，DoorCircleView 内部决定显示/隐藏和动画 */
+    private void updateDoorCircle(DoorCircleView v, Object doorEv, int winState) {
+        if (v == null) return;
         boolean doorOpen = getInt(doorEv) > 0;
-        boolean winOpen = winState == 0;   // dn.f(): 0=开 1=关（-1 无数据）
-        String doorTxt = doorEv == null ? "?" : doorOpen ? "门开" : "门关";
-        String winTxt = winState < 0 ? "" : winOpen ? " 窗开" : " 窗关";
-        tv.setText(doorTxt + winTxt);
-        boolean anyOpen = doorOpen || winOpen;
-        tv.setTextColor(anyOpen ? 0xFFFF5A5A : 0xFF00FF9D);
-        // 整框染色（半透明红底/正常深底）
-        android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
-        gd.setColor(anyOpen ? 0x40FF5A5A : 0xD9060A14);
-        gd.setStroke(dip(1), anyOpen ? 0xFFFF5A5A : 0x5900E5FF);
-        gd.setCornerRadius(dip(6));
-        tag.setBackground(gd);
+        boolean winOpen = winState == 0;   // 0=开 1=关 -1=无数据
+        v.update(doorOpen, winOpen);
     }
 
     /** 从 hvacProps 里取指定 area 的值（16385 温度这类多区属性用） */
