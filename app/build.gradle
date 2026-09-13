@@ -1,0 +1,56 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.jingxin.lincarinfo'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.jingxin.lincarinfo"
+        minSdk 23
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            def props = new Properties()
+            def propsFile = rootProject.file('local.properties')
+            if (propsFile.exists()) {
+                props.load(propsFile.newDataInputStream())
+            }
+            storeFile file('lincar_release.jks')
+            storePassword props.getProperty('lincar.storePassword', '')
+            keyAlias props.getProperty('lincar.keyAlias', 'lincar')
+            keyPassword props.getProperty('lincar.keyPassword', '')
+        }
+    }
+
+    buildTypes {
+        release {
+            // R8 内联 readHvacCcm+blindScanHvac 时产生 VerifyError 坏字节码（模拟器 ART 校验器实锤）
+            // 探针 APK 不需要混淆瘦身，关掉绕开此坑
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // 使用车机系统的 car lib（系统自带），不打包进 APK
+    useLibrary 'android.car'
+}
+
+dependencies {
+    // Android Car API 由车机系统提供，compileOnly 不打包
+    compileOnly files('libs/android.car.jar')
+}

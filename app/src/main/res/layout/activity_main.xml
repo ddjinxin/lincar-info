@@ -1,0 +1,518 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#060A14">
+
+    <!-- ============ 顶部横幅：档位/续航/总里程/机油/燃油 (占10%) ============ -->
+    <LinearLayout
+        android:id="@+id/banner"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="10"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="#0B1424">
+
+        <!-- 档位 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginEnd="12dp">
+            <TextView
+                android:id="@+id/tvGear"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="P"
+                android:textSize="15sp"
+                android:textColor="#00E5FF"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:shadowColor="#00E5FF"
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="档位"
+                android:textSize="7sp"
+                android:textColor="#5C7A99"
+                android:letterSpacing="0.3"/>
+        </LinearLayout>
+
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+
+        <!-- 续航 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp">
+            <TextView
+                android:id="@+id/tvRange"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="503km"
+                android:textSize="15sp"
+                android:textColor="#00FF9D"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:shadowColor="#00FF9D"
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="续航里程"
+                android:textSize="7sp"
+                android:textColor="#5C7A99"
+                android:letterSpacing="0.3"/>
+        </LinearLayout>
+
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+
+        <!-- 总里程 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp">
+            <TextView
+                android:id="@+id/tvOdo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="74,595 km"
+                android:textSize="15sp"
+                android:textColor="#EAF6FF"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:shadowColor="#00E5FF"
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="6"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="总里程"
+                android:textSize="7sp"
+                android:textColor="#5C7A99"
+                android:letterSpacing="0.3"/>
+        </LinearLayout>
+
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+
+        <!-- 机油 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp">
+            <TextView
+                android:id="@+id/tvOil"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="75%"
+                android:textSize="15sp"
+                android:textColor="#00E5FF"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:shadowColor="#00E5FF"
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="机油寿命"
+                android:textSize="7sp"
+                android:textColor="#5C7A99"
+                android:letterSpacing="0.3"/>
+        </LinearLayout>
+
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+
+        <!-- 燃油 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="12dp">
+            <TextView
+                android:id="@+id/tvFuel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="81%"
+                android:textSize="15sp"
+                android:textColor="#00E5FF"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:shadowColor="#00E5FF"
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="燃油"
+                android:textSize="7sp"
+                android:textColor="#5C7A99"
+                android:letterSpacing="0.3"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ============ 速度区 (占12%) ============ -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="12">
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_gravity="center">
+            <TextView
+                android:id="@+id/tvSpeed"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textSize="50sp"
+                android:textColor="#EAF6FF"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:shadowColor="#00E5FF"
+                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="14"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="KM / H"
+                android:textSize="7sp"
+                android:textColor="#5C7A99"
+                android:letterSpacing="0.6"/>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ============ 车图区 (吃剩余 ≈63%) ============ -->
+    <FrameLayout
+        android:id="@+id/carZone"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="63">
+
+        <ImageView
+            android:id="@+id/ivCar"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:layout_gravity="center"
+            android:adjustViewBounds="true"
+            android:scaleType="fitCenter"
+            android:src="@drawable/car_top"
+            android:padding="6dp"
+            android:layout_marginStart="30dp"
+            android:layout_marginEnd="30dp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="24dp"/>
+
+        <!-- 左前门窗 -->
+        <LinearLayout
+            android:id="@+id/tagLFDw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag">
+            <TextView android:id="@+id/tvLFDwWho"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="左前" android:textSize="7sp" android:textColor="#8FA6BD"/>
+            <TextView android:id="@+id/tvLFDw"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="门开 窗开" android:textSize="8sp" android:textColor="#FF5A5A" android:textStyle="bold"/>
+        </LinearLayout>
+
+        <!-- 右前门窗 -->
+        <LinearLayout
+            android:id="@+id/tagRFDw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag">
+            <TextView android:id="@+id/tvRFDwWho"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="右前" android:textSize="7sp" android:textColor="#8FA6BD"/>
+            <TextView android:id="@+id/tvRFDw"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="门关 窗关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
+        </LinearLayout>
+
+        <!-- 左后门窗 -->
+        <LinearLayout
+            android:id="@+id/tagLRDw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag">
+            <TextView android:id="@+id/tvLRDwWho"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="左后" android:textSize="7sp" android:textColor="#8FA6BD"/>
+            <TextView android:id="@+id/tvLRDw"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="门关 窗关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
+        </LinearLayout>
+
+        <!-- 右后门窗 -->
+        <LinearLayout
+            android:id="@+id/tagRRDw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag">
+            <TextView android:id="@+id/tvRRDwWho"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="右后" android:textSize="7sp" android:textColor="#8FA6BD"/>
+            <TextView android:id="@+id/tvRRDw"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="门关 窗关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
+        </LinearLayout>
+
+        <!-- 左前胎压 -->
+        <LinearLayout
+            android:id="@+id/tagLFTire"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag_tire">
+            <TextView android:id="@+id/tvLFTire"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="220 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvLFTemp"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="左前" android:textSize="7sp" android:textColor="#5C7A99"/>
+        </LinearLayout>
+
+        <!-- 右前胎压 -->
+        <LinearLayout
+            android:id="@+id/tagRFTire"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag_tire">
+            <TextView android:id="@+id/tvRFTire"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="220 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvRFTemp"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="右前" android:textSize="7sp" android:textColor="#5C7A99"/>
+        </LinearLayout>
+
+        <!-- 左后胎压 -->
+        <LinearLayout
+            android:id="@+id/tagLRTire"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag_tire">
+            <TextView android:id="@+id/tvLRTire"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="220 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvLRTemp"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="左后" android:textSize="7sp" android:textColor="#5C7A99"/>
+        </LinearLayout>
+
+        <!-- 右后胎压 -->
+        <LinearLayout
+            android:id="@+id/tagRRTire"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tag_tire">
+            <TextView android:id="@+id/tvRRTire"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="225 kPa" android:textSize="10sp" android:textColor="#EAF6FF" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvRRTemp"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="19.5℃" android:textSize="7sp" android:textColor="#5C7A99"/>
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="右后" android:textSize="7sp" android:textColor="#5C7A99"/>
+        </LinearLayout>
+
+        <!-- 后备箱/尾门 -->
+        <LinearLayout
+            android:id="@+id/tagTrunk"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="@drawable/bg_tag">
+            <TextView android:id="@+id/tvTrunk"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="后备箱关 · 尾门关" android:textSize="8sp" android:textColor="#00FF9D" android:textStyle="bold"/>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ============ 空调卡 (占15%) ============ -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="15"
+        android:orientation="vertical"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_card"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="10dp"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="▎空调"
+            android:textSize="8sp"
+            android:textColor="#5C7A99"
+            android:letterSpacing="0.2"
+            android:layout_marginBottom="6dp"/>
+
+        <!-- 主驾 / PM2.5 / 副驾 三格 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="8dp">
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@drawable/bg_zone"
+                android:paddingTop="5dp" android:paddingBottom="6dp">
+                <TextView
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="主驾" android:textSize="7sp" android:textColor="#5C7A99"/>
+                <TextView
+                    android:id="@+id/tvTempDriver"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="23.0℃" android:textSize="16sp" android:textColor="#EAF6FF"
+                    android:fontFamily="monospace" android:textStyle="bold"/>
+            </LinearLayout>
+
+            <Space android:layout_width="8dp" android:layout_height="1dp"/>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@drawable/bg_zone"
+                android:paddingTop="5dp" android:paddingBottom="6dp">
+                <TextView
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="车内PM2.5" android:textSize="7sp" android:textColor="#5C7A99"/>
+                <TextView
+                    android:id="@+id/tvPm"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="4" android:textSize="16sp" android:textColor="#00FF9D"
+                    android:fontFamily="monospace" android:textStyle="bold"/>
+            </LinearLayout>
+
+            <Space android:layout_width="8dp" android:layout_height="1dp"/>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@drawable/bg_zone"
+                android:paddingTop="5dp" android:paddingBottom="6dp">
+                <TextView
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="副驾" android:textSize="7sp" android:textColor="#5C7A99"/>
+                <TextView
+                    android:id="@+id/tvTempPassenger"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="23.0℃" android:textSize="16sp" android:textColor="#EAF6FF"
+                    android:fontFamily="monospace" android:textStyle="bold"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 空调状态胶囊 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <TextView
+                android:id="@+id/tvFan"
+                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:gravity="center"
+                android:text="风量1档" android:textSize="7sp" android:textColor="#8FA6BD"
+                android:background="@drawable/bg_chip" android:padding="4dp"/>
+            <Space android:layout_width="5dp" android:layout_height="1dp"/>
+            <TextView
+                android:id="@+id/tvAc"
+                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:gravity="center"
+                android:text="A/C 关" android:textSize="7sp" android:textColor="#8FA6BD"
+                android:background="@drawable/bg_chip" android:padding="4dp"/>
+            <Space android:layout_width="5dp" android:layout_height="1dp"/>
+            <TextView
+                android:id="@+id/tvCirc"
+                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:gravity="center"
+                android:text="内循环 开" android:textSize="7sp" android:textColor="#00E5FF"
+                android:background="@drawable/bg_chip_on" android:padding="4dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="5dp">
+            <TextView
+                android:id="@+id/tvIntake"
+                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:gravity="center"
+                android:text="进气 外循环" android:textSize="7sp" android:textColor="#8FA6BD"
+                android:background="@drawable/bg_chip" android:padding="4dp"/>
+            <Space android:layout_width="5dp" android:layout_height="1dp"/>
+            <TextView
+                android:id="@+id/tvSeat"
+                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:gravity="center"
+                android:text="座椅通风 关" android:textSize="7sp" android:textColor="#8FA6BD"
+                android:background="@drawable/bg_chip" android:padding="4dp"/>
+            <Space android:layout_width="5dp" android:layout_height="1dp"/>
+            <TextView
+                android:id="@+id/tvAirLevel"
+                android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:gravity="center"
+                android:text="出风强度 12" android:textSize="7sp" android:textColor="#8FA6BD"
+                android:background="@drawable/bg_chip" android:padding="4dp"/>
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    >
+
+    <!-- Car 权限（系统签名才能授予） -->
+    <uses-permission android:name="android.car.permission.CAR_FUEL" />
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <uses-permission android:name="android.car.permission.CAR_INFO" />
+    <uses-permission android:name="android.car.permission.CAR_VENDOR_EXTENSION" />
+    <uses-permission android:name="android.car.permission.CAR_CABIN" />
+    <uses-permission android:name="android.car.permission.READ_CAR_POWER_POLICY" />
+    <!-- 车机 19:58 实测：无此权限 type=4 总里程报 SecurityException -->
+    <uses-permission android:name="android.car.permission.CAR_MILEAGE" />
+    <!-- 车机 19:58 实测：无此权限 type=72 报 SecurityException -->
+    <uses-permission android:name="android.car.permission.VEHICLE_DYNAMICS_STATE" />
+    <!-- 里程/车速/油量/挡位相关 -->
+    <uses-permission android:name="android.car.permission.CAR_ENGINE" />
+    <uses-permission android:name="android.car.permission.CONTROL_CAR_EPOCH" />
+    <uses-permission android:name="android.car.permission.CAR_DRIVING_STATE" />
+    <uses-permission android:name="android.car.permission.CAR_CONTROL_AUDIO_VOLUME" />
+    <!-- 日志写公共目录 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- 车机 21:49 实测：HVAC Manager 获取报 SecurityException，CarLauncher 同样声明 -->
+    <uses-permission android:name="android.car.permission.CAR_HVAC" />
+
+    <application android:sharedUserId="android.uid.system"
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LinCarInfo">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
