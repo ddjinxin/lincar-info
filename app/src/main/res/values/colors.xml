@@ -52,6 +52,8 @@
     <!-- 速度环底/描边 -->
     <color name="speed_circle_bg">#08001421</color>
     <color name="speed_circle_stroke">#3300E5FF</color>
+    <!-- 流光线：夜间绿 -->
+    <color name="flow_line">#00FF9D</color>
     <!-- 发光阴影开关：夜间开 -->
     <bool name="glow_enabled">true</bool>
     <!-- 车图资源指向：夜间车图 -->

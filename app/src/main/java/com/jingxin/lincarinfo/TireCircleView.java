@@ -46,6 +46,10 @@ public class TireCircleView extends View {
     private static final float RING_ALPHA_LOW = 0.40f;
     private static final float RING_ALPHA_HIGH = 1.00f;
 
+    /** dp 缩放比例（由 MainActivity.applyFontScale 设置，随屏宽等比缩放） */
+    private float dpScale = 1f;
+    public void setDpScale(float scale) { this.dpScale = scale; }
+
     /** 颜色：正常绿 / 无效灰 / 琥珀 / 异常红（从资源读，日夜自适应） */
     public static int colorOk(Context c) { return c.getResources().getColor(R.color.state_ok); }
     public static int colorInvalid(Context c) { return c.getResources().getColor(R.color.state_invalid); }
@@ -211,7 +215,7 @@ public class TireCircleView extends View {
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         boolean landscape = getResources().getConfiguration().screenWidthDp
                 > getResources().getConfiguration().screenHeightDp * 1.2f;
-        float dp = landscape ? DIAMETER_DP_LANDSCAPE : DIAMETER_DP_PORTRAIT;
+        float dp = (landscape ? DIAMETER_DP_LANDSCAPE : DIAMETER_DP_PORTRAIT) * dpScale;
         int size = Math.round(dp * density());
         setMeasuredDimension(size, size);
     }

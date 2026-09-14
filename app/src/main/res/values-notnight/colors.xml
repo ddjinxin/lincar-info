@@ -11,21 +11,21 @@
     <color name="accent_cyan">#0077C2</color>
     <!-- 数值白：炭黑文本 -->
     <color name="text_bright">#1A2B3C</color>
-    <!-- 数值绿：深绿 -->
-    <color name="accent_green">#00875A</color>
+    <!-- 数值绿→白天改蓝 -->
+    <color name="accent_green">#0077C2</color>
     <!-- 标签灰：中灰 -->
     <color name="text_label">#6B7A8D</color>
     <!-- chip 关态文字 -->
     <color name="chip_off_text">#5B6B7E</color>
-    <!-- 状态色 -->
-    <color name="state_ok">#00875A</color>
+    <!-- 状态色（白天绿→蓝） -->
+    <color name="state_ok">#0077C2</color>
     <color name="state_invalid">#8A97A5</color>
     <color name="state_warn">#C77800</color>
     <color name="state_alert">#D32F2F</color>
     <color name="state_alert_deep">#B71C1C</color>
     <color name="state_pm_4">#C62828</color>
-    <!-- PM2.5 -->
-    <color name="pm_good">#00875A</color>
+    <!-- PM2.5（白天优级绿→蓝） -->
+    <color name="pm_good">#0077C2</color>
     <color name="pm_fair">#0077C2</color>
     <!-- 连线 -->
     <color name="line_normal">#0077C2</color>
@@ -52,6 +52,8 @@
     <!-- 速度环底/描边 -->
     <color name="speed_circle_bg">#0A1A2B3C</color>
     <color name="speed_circle_stroke">#330077C2</color>
+    <!-- 流光线：白天蓝 -->
+    <color name="flow_line">#0077C2</color>
     <!-- 发光阴影开关：白天关 -->
     <bool name="glow_enabled">false</bool>
     <!-- 车图资源指向：白天车图 -->

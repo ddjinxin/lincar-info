@@ -1,7 +1,11 @@
 package com.jingxin.lincarinfo;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.os.Bundle;
 import android.os.Build;
@@ -173,6 +177,7 @@ public class MainActivity extends Activity {
     private static final float DESIGN_WIDTH_DP = 360f;   // 效果图 720px@2x → 360dp 基准
 
     private TextView tvGear, tvRange, tvOdo, tvOil, tvFuel, tvSpeed;
+    private TextView tvRangeUnit, tvOdoUnit;
     private TextView tvTempDriver, tvPm, tvTempPassenger;
 
     private DoorCircleView tagLFDw, tagRFDw, tagLRDw, tagRRDw;
@@ -258,13 +263,22 @@ public class MainActivity extends Activity {
     /** carinfo.log 节流 */
     private long lastFileWrite;
 
-    // ========== 日夜模式（两态手动：白天 / 夜间，页面单击切换） ==========
+    // ========== 日夜模式（两态：白天 / 夜间，页面单击切换 + 高德导航广播自动切换） ==========
     /** SP 文件名与键 */
     private static final String PREF_UI = "ui";
     private static final String KEY_DAY_MODE = "day_mode";   // 0=夜间 1=白天（默认夜间）
+    private static final String KEY_AMAP_TRIGGERED = "amap_triggered"; // 高德是否触发过
     static final int MODE_NIGHT = 0;
     static final int MODE_DAY = 1;
     private int uiModePref = MODE_NIGHT;
+
+    // 高德导航日夜模式广播
+    private static final String ACTION_AUTONAVI = "AUTONAVI_STANDARD_BROADCAST_SEND";
+    private static final int KEY_TYPE_DAY_NIGHT = 10019;
+    private static final int EXTRA_STATE_DAY = 37;
+    private static final int EXTRA_STATE_NIGHT = 38;
+    private long lastAmapThemeTime = 0;
+    private BroadcastReceiver amapThemeReceiver;
 
     private android.content.SharedPreferences uiPrefs() {
         return getSharedPreferences(PREF_UI, MODE_PRIVATE);
@@ -287,9 +301,75 @@ public class MainActivity extends Activity {
     /** 页面单击切换：夜间 ↔ 白天，SP 持久化 + recreate */
     private void toggleDayNight() {
         int next = uiModePref == MODE_DAY ? MODE_NIGHT : MODE_DAY;
-        uiPrefs().edit().putInt(KEY_DAY_MODE, next).apply();
-        bootLog("[UI] 日夜模式切换: " + (next == MODE_DAY ? "白天" : "夜间"));
+        uiPrefs().edit()
+                .putInt(KEY_DAY_MODE, next)
+                .putBoolean(KEY_AMAP_TRIGGERED, false) // 手动切换，暂停高德同步
+                .apply();
+        bootLog("[UI] 日夜模式手动切换: " + (next == MODE_DAY ? "白天" : "夜间"));
         recreate();
+    }
+
+    /** 注册高德导航日夜模式广播 */
+    private void registerAmapThemeReceiver() {
+        amapThemeReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!ACTION_AUTONAVI.equals(intent.getAction())) return;
+                int keyType = intent.getIntExtra("KEY_TYPE", -1);
+                if (keyType != KEY_TYPE_DAY_NIGHT) return;
+                int extraState = intent.getIntExtra("EXTRA_STATE", -1);
+                if (extraState != EXTRA_STATE_DAY && extraState != EXTRA_STATE_NIGHT) return;
+                // 防抖：500ms 内不重复处理
+                long now = System.currentTimeMillis();
+                if (now - lastAmapThemeTime < 500) return;
+                lastAmapThemeTime = now;
+                boolean isNight = (extraState == EXTRA_STATE_NIGHT);
+                int targetMode = isNight ? MODE_NIGHT : MODE_DAY;
+                if (targetMode == uiModePref) return; // 已是目标模式，无需切换
+                uiPrefs().edit()
+                        .putInt(KEY_DAY_MODE, targetMode)
+                        .putBoolean(KEY_AMAP_TRIGGERED, true) // 高德触发，标记自动同步
+                        .apply();
+                bootLog("[UI] 高德导航触发日夜切换: " + (isNight ? "夜间" : "白天"));
+                runOnUiThread(() -> recreate());
+            }
+        };
+        IntentFilter filter = new IntentFilter(ACTION_AUTONAVI);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                Method m = Context.class.getMethod("registerReceiver",
+                        BroadcastReceiver.class, IntentFilter.class, int.class);
+                m.invoke(this, amapThemeReceiver, filter, Context.RECEIVER_EXPORTED);
+            } catch (Throwable e) {
+                Log.w(TAG, "反射注册高德广播失败，回退2参数: " + e);
+                registerReceiver(amapThemeReceiver, filter);
+            }
+        } else {
+            registerReceiver(amapThemeReceiver, filter);
+        }
+        bootLog("[UI] 高德导航日夜广播已注册");
+        // 主动查询高德当前日夜状态（应用启动时高德不会主动发广播）
+        queryAmapDayNight();
+    }
+
+    /** 主动向高德查询当前日夜模式 */
+    private void queryAmapDayNight() {
+        try {
+            Intent query = new Intent("AUTONAVI_STANDARD_BROADCAST_GET");
+            query.putExtra("KEY_TYPE", KEY_TYPE_DAY_NIGHT);
+            sendBroadcast(query);
+            bootLog("[UI] 已向高德查询当前日夜状态");
+        } catch (Throwable e) {
+            Log.w(TAG, "查询高德日夜状态失败: " + e);
+        }
+    }
+
+    /** 注销高德导航日夜模式广播 */
+    private void unregisterAmapThemeReceiver() {
+        if (amapThemeReceiver != null) {
+            try { unregisterReceiver(amapThemeReceiver); } catch (Throwable ignored) {}
+            amapThemeReceiver = null;
+        }
     }
 
     @Override
@@ -380,6 +460,20 @@ public class MainActivity extends Activity {
             bootLog("[UI] 窗口宽=" + winW + "dp → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏不放大)" : ""));
             View root = findViewById(R.id.root);
             scaleTextSize(root, scale);
+            // 圆形标签缩放：竖屏按屏宽/540dp，横屏按屏高/540dp，下限 0.5 防过小
+            float refDp = landscape ? getResources().getConfiguration().screenHeightDp
+                    : getResources().getConfiguration().screenWidthDp;
+            float circleScale = Math.min(refDp / 540f, 1f);
+            circleScale = Math.max(circleScale, 0.5f);
+            if (tagLFTire != null) tagLFTire.setDpScale(circleScale);
+            if (tagRFTire != null) tagRFTire.setDpScale(circleScale);
+            if (tagLRTire != null) tagLRTire.setDpScale(circleScale);
+            if (tagRRTire != null) tagRRTire.setDpScale(circleScale);
+            if (tagLFDw != null) tagLFDw.setDpScale(circleScale);
+            if (tagRFDw != null) tagRFDw.setDpScale(circleScale);
+            if (tagLRDw != null) tagLRDw.setDpScale(circleScale);
+            if (tagRRDw != null) tagRRDw.setDpScale(circleScale);
+            if (tagTrunk != null) tagTrunk.setDpScale(circleScale);
         } catch (Throwable e) {
             bootLog("[UI] applyFontScale 失败: " + rootCause(e));
         }
@@ -395,7 +489,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** banner 字号：横屏按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
+    /** banner 字号：横屏按高度比例覆盖；竖屏按宽度自适应防止折行 */
     private void scaleBannerByHeight() {
         final View banner = findViewById(R.id.banner);
         if (banner == null) return;
@@ -404,7 +498,8 @@ public class MainActivity extends Activity {
                 @Override public void onGlobalLayout() {
                     try {
                         int bh = banner.getHeight();
-                        if (bh <= 0) return;
+                        int bw = banner.getWidth();
+                        if (bh <= 0 || bw <= 0) return;
                         banner.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                         if (isLandscape()) {
                             float valSize = bh * 0.42f;
@@ -412,7 +507,9 @@ public class MainActivity extends Activity {
                             scaleBannerText(banner, valSize, lblSize);
                             bootLog("[UI] 横屏 banner高=" + bh + "px → 数值" + valSize + "px 标签" + lblSize + "px(按高度)");
                         } else {
-                            bootLog("[UI] 竖屏 banner高=" + bh + "px → 保持 applyFontScale 宽度缩放");
+                            // 竖屏：测量内容宽度，如溢出则等比缩小字号+间距
+                            fitBannerWidth(banner, bw);
+                            bootLog("[UI] 竖屏 banner高=" + bh + "px 宽=" + bw + "px → 自适应宽度");
                         }
                     } catch (Throwable e) {
                         bootLog("[UI] scaleBannerByHeight 失败: " + rootCause(e));
@@ -420,6 +517,55 @@ public class MainActivity extends Activity {
                     }
                 }
             });
+    }
+
+    /**
+     * 竖屏 banner 宽度自适应：测量所有子 View 内容宽度总和，
+     * 如超出 banner 可用宽度，则等比缩小字号和间距。
+     */
+    private void fitBannerWidth(View banner, int bannerWidth) {
+        if (!(banner instanceof android.view.ViewGroup)) return;
+        android.view.ViewGroup group = (android.view.ViewGroup) banner;
+        // 测量所有子 View 的总宽度（含 margin）
+        int contentWidth = 0;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            child.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            android.widget.LinearLayout.LayoutParams lp = (android.widget.LinearLayout.LayoutParams) child.getLayoutParams();
+            contentWidth += child.getMeasuredWidth() + lp.leftMargin + lp.rightMargin;
+        }
+        if (contentWidth <= bannerWidth) return; // 未溢出，无需缩放
+        float ratio = (float) bannerWidth / contentWidth;
+        // 缩小字号
+        scaleBannerTextByRatio(banner, ratio);
+        // 缩小间距
+        scaleBannerMarginByRatio(group, ratio);
+        bootLog("[UI] banner内容=" + contentWidth + "px > 可用=" + bannerWidth + "px → 缩放比例=" + String.format("%.2f", ratio));
+    }
+
+    private void scaleBannerTextByRatio(View v, float ratio) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, tv.getTextSize() * ratio);
+        } else if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) scaleBannerTextByRatio(g.getChildAt(i), ratio);
+        }
+    }
+
+    private void scaleBannerMarginByRatio(android.view.ViewGroup group, float ratio) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            android.widget.LinearLayout.LayoutParams lp = (android.widget.LinearLayout.LayoutParams) child.getLayoutParams();
+            lp.leftMargin = Math.round(lp.leftMargin * ratio);
+            lp.rightMargin = Math.round(lp.rightMargin * ratio);
+            if (lp instanceof android.widget.LinearLayout.LayoutParams) {
+                child.setLayoutParams(lp);
+            }
+            if (child instanceof android.view.ViewGroup) {
+                scaleBannerMarginByRatio((android.view.ViewGroup) child, ratio);
+            }
+        }
     }
 
     /** 递归设 banner 内 TextView 字号：有 id 的设 valSize，无 id 的设 lblSize */
@@ -447,6 +593,11 @@ public class MainActivity extends Activity {
                         if (ah <= 0) return;
                         acCard.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                         if (isLandscape()) {
+                            // 横屏 acCard 高度小（~50px），压缩 padding 释放空间给文字
+                            acCard.setPadding(dip(10), dip(1), dip(10), dip(1));
+                            LinearLayout.LayoutParams acLp = (LinearLayout.LayoutParams) acCard.getLayoutParams();
+                            acLp.bottomMargin = dip(3);
+                            acCard.setLayoutParams(acLp);
                             android.view.ViewGroup cardOuter = (android.view.ViewGroup) acCard;
                             android.view.ViewGroup cardRow = (android.view.ViewGroup) cardOuter.getChildAt(0);
                             // 横屏：三个子区域改为一行显示（标签+数值水平排列）
@@ -455,6 +606,7 @@ public class MainActivity extends Activity {
                                 if (child instanceof LinearLayout) {
                                     LinearLayout zone = (LinearLayout) child;
                                     zone.setOrientation(LinearLayout.HORIZONTAL);
+                                    zone.setPadding(dip(2), dip(1), dip(2), dip(1));
                                     // 标签和数值之间加间距
                                     for (int j = 0; j < zone.getChildCount(); j++) {
                                         View tv = zone.getChildAt(j);
@@ -469,7 +621,7 @@ public class MainActivity extends Activity {
                             android.view.ViewGroup zone = (android.view.ViewGroup) cardRow.getChildAt(0);
                             int zoneH = zone.getHeight();
                             if (zoneH > 0) {
-                                int usable = zoneH - dip(11);
+                                int usable = zoneH - dip(2);
                                 float valSize = usable * 0.7f;   // 数值占可用高度 70%
                                 float lblSize = usable * 0.35f;  // 标签占 35%
                                 scaleBannerText(acCard, valSize, lblSize);
@@ -885,6 +1037,8 @@ public class MainActivity extends Activity {
         tvOil = findViewById(R.id.tvOil);
         tvFuel = findViewById(R.id.tvFuel);
         tvSpeed = findViewById(R.id.tvSpeed);
+        tvRangeUnit = findViewById(R.id.tvRangeUnit);
+        tvOdoUnit = findViewById(R.id.tvOdoUnit);
         tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
         tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
         tvTempDriver = findViewById(R.id.tvTempDriver);
@@ -898,9 +1052,11 @@ public class MainActivity extends Activity {
         ivCar = findViewById(R.id.ivCar);
         carZone = findViewById(R.id.carZone);
         tagLines = findViewById(R.id.tagLines);
-        // 页面单击切换日夜模式（无按钮，无自动跟随）
+        // 页面单击切换日夜模式（高德导航广播也可自动切换）
         View root = findViewById(R.id.root);
         if (root != null) root.setOnClickListener(v -> toggleDayNight());
+        // 注册高德导航日夜模式广播
+        registerAmapThemeReceiver();
         safeLoadCarImage();
         applyFontScale();
         // 清除 XML 布局中写死的文字光晕（日夜均关闭 shadowColor/shadowRadius）
@@ -960,6 +1116,7 @@ public class MainActivity extends Activity {
         if (car != null) {
             try { car.getClass().getMethod("disconnect").invoke(car); bootLog("[onDestroy] Car 已断开"); } catch (Throwable ignored) {}
         }
+        unregisterAmapThemeReceiver();
         super.onDestroy();
     }
     // ========== 设备信息 & API 探测 ==========
@@ -2234,22 +2391,15 @@ public class MainActivity extends Activity {
         if (evRange == null) {
             tvRange.setText("--");
         } else {
-            String num = String.format("%.0f", Math.max(range, 0));
-            SpannableString s = new SpannableString(num + mileageUnit);
-            s.setSpan(new android.text.style.AbsoluteSizeSpan(dip(10), true), num.length(), s.length(),
-                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
-            tvRange.setText(s);
+            tvRange.setText(String.format("%.0f", Math.max(range, 0)));
         }
+        if (tvRangeUnit != null) tvRangeUnit.setText(mileageUnit);
         if (evOdometer == null || odometer < 0 || odometer == 1.6777215E7f) {
             tvOdo.setText("--");
         } else {
-            String num = String.format("%.0f", odometer);
-            String full = num + mileageUnit;
-            SpannableString s = new SpannableString(full);
-            s.setSpan(new android.text.style.AbsoluteSizeSpan(dip(10), true), num.length(), full.length(),
-                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
-            tvOdo.setText(s);
+            tvOdo.setText(String.format("%.0f", odometer));
         }
+        if (tvOdoUnit != null) tvOdoUnit.setText(mileageUnit);
         tvOil.setText(evOilLife == null ? "--" : oilLife + "%");
         tvFuel.setText(evFuelPct == null ? "--" : String.format("%.0f%%", Math.max(fuelPct, 0)));
 

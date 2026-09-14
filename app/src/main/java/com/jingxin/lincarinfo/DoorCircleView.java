@@ -36,6 +36,10 @@ public class DoorCircleView extends View {
     private static final float RING_ALPHA_LOW = 0.40f;
     private static final float RING_ALPHA_HIGH = 1.00f;
 
+    /** dp 缩放比例（由 MainActivity.applyFontScale 设置，随屏宽等比缩放） */
+    private float dpScale = 1f;
+    public void setDpScale(float scale) { this.dpScale = scale; }
+
     private final Paint circlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint breathPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -195,7 +199,7 @@ public class DoorCircleView extends View {
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         boolean landscape = getResources().getConfiguration().screenWidthDp
                 > getResources().getConfiguration().screenHeightDp * 1.2f;
-        float dp = landscape ? DIAMETER_DP_LANDSCAPE : DIAMETER_DP_PORTRAIT;
+        float dp = (landscape ? DIAMETER_DP_LANDSCAPE : DIAMETER_DP_PORTRAIT) * dpScale;
         int size = Math.round(dp * density());
         setMeasuredDimension(size, size);
     }
