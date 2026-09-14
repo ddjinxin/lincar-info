@@ -258,6 +258,51 @@ public class MainActivity extends Activity {
     /** carinfo.log 节流 */
     private long lastFileWrite;
 
+    // ========== 日夜模式（两态手动：白天 / 夜间，页面单击切换） ==========
+    /** SP 文件名与键 */
+    private static final String PREF_UI = "ui";
+    private static final String KEY_DAY_MODE = "day_mode";   // 0=夜间 1=白天（默认夜间）
+    static final int MODE_NIGHT = 0;
+    static final int MODE_DAY = 1;
+    private int uiModePref = MODE_NIGHT;
+
+    private android.content.SharedPreferences uiPrefs() {
+        return getSharedPreferences(PREF_UI, MODE_PRIVATE);
+    }
+
+    /** 读取 SP 偏好并在 Resources 上强制应用 uiMode 覆盖（每次 attachBaseContext 调用） */
+    private void applyDayNightOverride(android.content.res.Resources res) {
+        uiModePref = uiPrefs().getInt(KEY_DAY_MODE, MODE_NIGHT);
+        int nightMode = (res.getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK);
+        int desired = uiModePref == MODE_DAY ? android.content.res.Configuration.UI_MODE_NIGHT_NO
+                : android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        if (desired != nightMode) {
+            android.content.res.Configuration cfg = new android.content.res.Configuration(res.getConfiguration());
+            cfg.uiMode = (cfg.uiMode & ~android.content.res.Configuration.UI_MODE_NIGHT_MASK) | desired;
+            res.updateConfiguration(cfg, res.getDisplayMetrics());
+        }
+    }
+
+    /** 页面单击切换：夜间 ↔ 白天，SP 持久化 + recreate */
+    private void toggleDayNight() {
+        int next = uiModePref == MODE_DAY ? MODE_NIGHT : MODE_DAY;
+        uiPrefs().edit().putInt(KEY_DAY_MODE, next).apply();
+        bootLog("[UI] 日夜模式切换: " + (next == MODE_DAY ? "白天" : "夜间"));
+        recreate();
+    }
+
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        super.attachBaseContext(base);
+        // 日夜模式覆盖：必须在 super.onCreate 之前生效，否则 setContentView 解析的是旧资源
+        try {
+            applyDayNightOverride(getResources());
+        } catch (Throwable e) {
+            android.util.Log.w(TAG, "日夜模式覆盖失败", e);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -787,14 +832,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 安全加载车图：用 inSampleSize 降采样，防 density 缩放后 bitmap 过大崩溃 */
+    /** 安全加载车图：用 inSampleSize 降采样，防 density 缩放后 bitmap 过大崩溃。
+     *  车图按日夜模式自动切换：夜间 car_top.webp / 白天 car_top_day.webp（资源别名 car_top_sel） */
     private void safeLoadCarImage() {
         if (ivCar == null) return;
         try {
+            int carRes = R.drawable.car_top_sel;   // 日夜资源别名，values/values-notnight 各自指向
             // 先量原图边界
             android.graphics.BitmapFactory.Options opt = new android.graphics.BitmapFactory.Options();
             opt.inJustDecodeBounds = true;
-            android.graphics.BitmapFactory.decodeResource(getResources(), R.drawable.car_top, opt);
+            android.graphics.BitmapFactory.decodeResource(getResources(), carRes, opt);
             int bw = opt.outWidth, bh = opt.outHeight;
             bootLog("[UI] 车图原始: " + bw + "x" + bh);
 
@@ -820,7 +867,7 @@ public class MainActivity extends Activity {
             opt.inSampleSize = sampleSize;
             opt.inScaled = false;  // 不按 density 缩放
             android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeResource(
-                    getResources(), R.drawable.car_top, opt);
+                    getResources(), carRes, opt);
             if (bmp != null) {
                 ivCar.setImageBitmap(bmp);
                 bootLog("[UI] 车图加载完成: " + bmp.getWidth() + "x" + bmp.getHeight());
@@ -851,11 +898,26 @@ public class MainActivity extends Activity {
         ivCar = findViewById(R.id.ivCar);
         carZone = findViewById(R.id.carZone);
         tagLines = findViewById(R.id.tagLines);
+        // 页面单击切换日夜模式（无按钮，无自动跟随）
+        View root = findViewById(R.id.root);
+        if (root != null) root.setOnClickListener(v -> toggleDayNight());
         safeLoadCarImage();
         applyFontScale();
+        // 清除 XML 布局中写死的文字光晕（日夜均关闭 shadowColor/shadowRadius）
+        clearShadow(findViewById(R.id.root));
         scaleBannerByHeight();
         scaleAcCardByHeight();
         layoutCarTags();
+    }
+
+    /** 递归清除所有 TextView 的 shadowLayer（白天模式去光晕） */
+    private void clearShadow(View v) {
+        if (v instanceof TextView) {
+            ((TextView) v).setShadowLayer(0, 0, 0, 0);
+        } else if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) clearShadow(g.getChildAt(i));
+        }
     }
 
     @Override
@@ -2229,19 +2291,19 @@ public class MainActivity extends Activity {
     private void updateTireCircle(TireCircleView v, TireData td) {
         if (v == null) return;
         if (td == null) {
-            v.update("--", "kPa", TireCircleView.COLOR_INVALID, false);
+            v.update("--", "kPa", TireCircleView.colorInvalid(this), false);
             return;
         }
         int color;
         boolean alert;
         if (td.pressure >= 65533f) {
-            color = TireCircleView.COLOR_INVALID; alert = false;   // 无效值灰
+            color = TireCircleView.colorInvalid(this); alert = false;   // 无效值灰
         } else if (td.state > 250) {
-            color = TireCircleView.COLOR_ALERT; alert = true;      // 异常红
+            color = TireCircleView.colorAlert(this); alert = true;      // 异常红
         } else if (td.state > 150 || td.state > 75) {
-            color = TireCircleView.COLOR_WARN; alert = false;      // 高压/低压琥珀
+            color = TireCircleView.colorWarn(this); alert = false;      // 高压/低压琥珀
         } else {
-            color = TireCircleView.COLOR_OK; alert = false;         // 正常绿
+            color = TireCircleView.colorOk(this); alert = false;         // 正常绿
         }
         v.update(pressureNum(td.pressure), tireUnit, color, alert);
     }
@@ -2295,20 +2357,22 @@ public class MainActivity extends Activity {
 
     private void setChipBg(TextView chip, boolean on) {
         chip.setBackgroundResource(on ? R.drawable.bg_chip_on : R.drawable.bg_chip);
-        chip.setTextColor(on ? 0xFF00E5FF : 0xFF8FA6BD);
+        chip.setTextColor(on ? getResources().getColor(R.color.accent_cyan)
+                : getResources().getColor(R.color.chip_off_text));
     }
 
-    /** PM2.5 颜色：优绿/良青/中黄/差橙/差红/严重红/无效灰 */
-    private static int pmColor(int pm) {
+    /** PM2.5 颜色：优绿/良青/中黄/差橙/差红/严重红/无效灰（日夜自适应） */
+    private int pmColor(int pm) {
+        android.content.res.Resources res = getResources();
         int lv = pmLevel(pm);
         switch (lv) {
-            case 1: return 0xFF00FF9D;
-            case 2: return 0xFF00E5FF;
-            case 3: return 0xFFFFB020;
-            case 4: return 0xFFFF8A3D;
-            case 5: return 0xFFFF5A5A;
-            case 6: return 0xFFFF2E2E;
-            default: return 0xFF5C7A99;
+            case 1: return res.getColor(R.color.pm_good);
+            case 2: return res.getColor(R.color.pm_fair);
+            case 3: return res.getColor(R.color.state_warn);
+            case 4: return res.getColor(R.color.state_pm_4);
+            case 5: return res.getColor(R.color.state_alert);
+            case 6: return res.getColor(R.color.state_alert_deep);
+            default: return res.getColor(R.color.state_invalid);
         }
     }
 

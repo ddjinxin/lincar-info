@@ -46,11 +46,11 @@ public class TireCircleView extends View {
     private static final float RING_ALPHA_LOW = 0.40f;
     private static final float RING_ALPHA_HIGH = 1.00f;
 
-    /** 颜色：正常绿 / 无效灰 / 琥珀 / 异常红 */
-    public static final int COLOR_OK = 0xFF00FF9D;
-    public static final int COLOR_INVALID = 0xFF5C7A99;
-    public static final int COLOR_WARN = 0xFFFFB020;
-    public static final int COLOR_ALERT = 0xFFFF5A5A;
+    /** 颜色：正常绿 / 无效灰 / 琥珀 / 异常红（从资源读，日夜自适应） */
+    public static int colorOk(Context c) { return c.getResources().getColor(R.color.state_ok); }
+    public static int colorInvalid(Context c) { return c.getResources().getColor(R.color.state_invalid); }
+    public static int colorWarn(Context c) { return c.getResources().getColor(R.color.state_warn); }
+    public static int colorAlert(Context c) { return c.getResources().getColor(R.color.state_alert); }
 
     private final Paint circlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);   // 圆底
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);    // 固定描边
@@ -60,8 +60,10 @@ public class TireCircleView extends View {
 
     private String pressure = "--";
     private String unit = "kPa";
-    private int color = COLOR_OK;
+    private int color = 0xFF00FF9D;
     private boolean alert = false;
+    /** 发光阴影开关：夜间开（LED感）/白天关（高对比实色），构造时缓存 */
+    private final boolean glow;
     private ValueAnimator breathAnim;
     private ValueAnimator shakeAnim;
     /** 数值更新缩放动画 */
@@ -78,8 +80,10 @@ public class TireCircleView extends View {
 
     public TireCircleView(Context c, AttributeSet a) {
         super(c, a);
+        glow = c.getResources().getBoolean(R.bool.glow_enabled);
+        color = colorOk(c);
         circlePaint.setStyle(Paint.Style.FILL);
-        circlePaint.setColor(0xD9060A14);           // 深空黑半透底（与 bg_tag 一致）
+        circlePaint.setColor(c.getResources().getColor(R.color.circle_bg));   // 圆底（与 bg_tag 一致，日夜自适应）
         ringPaint.setStyle(Paint.Style.STROKE);
         ringPaint.setStrokeWidth(1.5f * density());  // 1dp 描边
         breathPaint.setStyle(Paint.Style.STROKE);
@@ -239,10 +243,10 @@ public class TireCircleView extends View {
         canvas.drawCircle(cx, cy, r, ringPaint);
 
         // ---- 内侧微光晕（中心向边的径向渐变，增强 LED 感） ----
-        Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        glow.setShader(new RadialGradient(cx, cy, r,
+        Paint innerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        innerGlow.setShader(new RadialGradient(cx, cy, r,
                 (color & 0x00FFFFFF) | 0x1A000000, 0x00000000, Shader.TileMode.CLAMP));
-        canvas.drawCircle(cx, cy, r, glow);
+        canvas.drawCircle(cx, cy, r, innerGlow);
 
         // ---- 3. 文字：胎压值（上）+ 单位（下），垂直居中 ----
         float maxTextW = r * 2f * 0.78f;                    // 圆内可用文字宽（弦长≈78%）
@@ -252,10 +256,10 @@ public class TireCircleView extends View {
         float unitSize = valSize * 0.40f;
         textPaint.setTextSize(valSize);
         textPaint.setColor(color);
-        textPaint.setShadowLayer(4f * d, 0, 0, color);      // LED 发光
+        if (glow) textPaint.setShadowLayer(4f * d, 0, 0, color);      // LED 发光（夜间）
         unitPaint.setTextSize(unitSize);
         unitPaint.setColor(color);
-        unitPaint.setShadowLayer(2f * d, 0, 0, color);
+        if (glow) unitPaint.setShadowLayer(2f * d, 0, 0, color);
 
         float rowGap = 2f * d;
         float valH = textPaint.getFontMetrics().bottom - textPaint.getFontMetrics().top;

@@ -43,10 +43,11 @@ public class TagLineOverlay extends View {
     /** 流动进度 0→1（一条线内的相位） */
     private float flow = 0f;
 
-    private static final int COLOR_NORMAL = 0xFF00E5FF;   // 青色
-    private static final int COLOR_ALERT = 0xFFFF5A5A;   // 红色
-    private static final int LINE_NORMAL = 0x5900E5FF;   // 线底：低透明青
-    private static final int LINE_ALERT = 0x59FF5A5A;    // 线底：低透明红
+    /** 颜色（构造时从资源读，日夜自适应） */
+    private int colorNormal;   // 正常：夜间青/白天深海蓝
+    private int colorAlert;   // 异常红
+    private int lineNormal;   // 线底：低透明正常色
+    private int lineAlert;    // 线底：低透明红
     /** 光斑覆盖长度占线段比例 */
     private static final float GLOW_SPAN = 0.28f;
     /** 流动周期 ms */
@@ -54,6 +55,11 @@ public class TagLineOverlay extends View {
 
     public TagLineOverlay(Context c, AttributeSet a) {
         super(c, a);
+        android.content.res.Resources res = c.getResources();
+        colorNormal = res.getColor(R.color.line_normal);
+        colorAlert = res.getColor(R.color.line_alert);
+        lineNormal = res.getColor(R.color.line_base_normal);
+        lineAlert = res.getColor(R.color.line_base_alert);
         basePaint.setStyle(Paint.Style.STROKE);
         basePaint.setStrokeWidth(2f);
         basePaint.setPathEffect(new DashPathEffect(new float[]{6f, 6f}, 0f));
@@ -132,8 +138,8 @@ public class TagLineOverlay extends View {
             // 标注点始终可见
             float cx = l.tag.getLeft() + l.tag.getWidth() / 2f;
             float cy = l.tag.getTop() + l.tag.getHeight() / 2f;
-            int cFull = l.alert ? COLOR_ALERT : COLOR_NORMAL;
-            int cBase = l.alert ? LINE_ALERT : LINE_NORMAL;
+            int cFull = l.alert ? colorAlert : colorNormal;
+            int cBase = l.alert ? lineAlert : lineNormal;
 
             // 连线：胎压始终可见，门窗/后备箱仅异常时可见
             boolean showLine = l.alert || l.lineAlways;

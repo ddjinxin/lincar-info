@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ===== 夜间色板（霓虹青/绿，LED发光） ===== -->
+    <!-- 页面背景：深空黑 -->
+    <color name="bg_page">#060A14</color>
+    <!-- banner 背景：暗夜蓝黑 -->
+    <color name="bg_banner">#0B1424</color>
+    <!-- 分隔线：暗蓝 -->
+    <color name="divider">#1E3048</color>
+    <!-- 主色：数值青 -->
+    <color name="accent_cyan">#00E5FF</color>
+    <!-- 数值白：高亮文本 -->
+    <color name="text_bright">#EAF6FF</color>
+    <!-- 数值绿：续航/PM2.5优 -->
+    <color name="accent_green">#00FF9D</color>
+    <!-- 标签灰：小字标签 -->
+    <color name="text_label">#5C7A99</color>
+    <!-- chip 关态文字 -->
+    <color name="chip_off_text">#8FA6BD</color>
+    <!-- 状态色：胎压正常绿/无效灰/警告琥珀/异常红 -->
+    <color name="state_ok">#00FF9D</color>
+    <color name="state_invalid">#5C7A99</color>
+    <color name="state_warn">#FFB020</color>
+    <color name="state_alert">#FF5A5A</color>
+    <color name="state_alert_deep">#FF2E2E</color>
+    <color name="state_pm_4">#FF8A3D</color>
+    <!-- PM2.5 颜色：优绿/良青/中黄/差橙/差红/严重红 -->
+    <color name="pm_good">#00FF9D</color>
+    <color name="pm_fair">#00E5FF</color>
+    <!-- 连线：正常青/异常红/线底低透明版 -->
+    <color name="line_normal">#00E5FF</color>
+    <color name="line_alert">#FF5A5A</color>
+    <color name="line_base_normal">#5900E5FF</color>
+    <color name="line_base_alert">#59FF5A5A</color>
+    <!-- 圆形标签底：深空黑半透（与 bg_tag 一致） -->
+    <color name="circle_bg">#D9060A14</color>
+    <!-- 卡片底：低透明青 -->
+    <color name="card_bg">#0D00E5FF</color>
+    <!-- 区域底：低透明青 -->
+    <color name="zone_bg">#0D00E5FF</color>
+    <color name="zone_stroke">#2400E5FF</color>
+    <!-- 标签底：深空黑半透+青描边 -->
+    <color name="tag_bg">#D9060A14</color>
+    <color name="tag_stroke">#5900E5FF</color>
+    <!-- 胎压标签描边：亮白 -->
+    <color name="tag_stroke_tire">#59EAF6FF</color>
+    <!-- chip 底：关闭白透/开启青透 -->
+    <color name="chip_bg">#0AFFFFFF</color>
+    <color name="chip_bg_stroke">#17FFFFFF</color>
+    <color name="chip_on_bg">#1A00E5FF</color>
+    <color name="chip_on_stroke">#7300E5FF</color>
+    <!-- 速度环底/描边 -->
+    <color name="speed_circle_bg">#08001421</color>
+    <color name="speed_circle_stroke">#3300E5FF</color>
+    <!-- 发光阴影开关：夜间开 -->
+    <bool name="glow_enabled">true</bool>
+    <!-- 车图资源指向：夜间车图 -->
+    <drawable name="car_top_sel">@drawable/car_top</drawable>
+</resources>

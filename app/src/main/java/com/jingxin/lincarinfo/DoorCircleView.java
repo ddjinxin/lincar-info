@@ -52,6 +52,8 @@ public class DoorCircleView extends View {
     private String textB = "窗开";   // 交替模式第二文本
     private String staticText = "";  // 静态模式文本
     private int color = 0xFFFF5A5A;  // 异常红
+    /** 发光阴影开关：夜间开/白天关，构造时缓存 */
+    private final boolean glow;
 
     private ValueAnimator breathAnim;
     private ValueAnimator textAnim;
@@ -66,8 +68,9 @@ public class DoorCircleView extends View {
 
     public DoorCircleView(Context c, AttributeSet a) {
         super(c, a);
+        glow = c.getResources().getBoolean(R.bool.glow_enabled);
         circlePaint.setStyle(Paint.Style.FILL);
-        circlePaint.setColor(0xD9060A14);
+        circlePaint.setColor(c.getResources().getColor(R.color.circle_bg));   // 圆底日夜自适应
         ringPaint.setStyle(Paint.Style.STROKE);
         ringPaint.setStrokeWidth(1.5f * density());
         breathPaint.setStyle(Paint.Style.STROKE);
@@ -88,7 +91,7 @@ public class DoorCircleView extends View {
             setMode(MODE_HIDDEN);
             return;
         }
-        color = 0xFFFF5A5A;
+        color = getResources().getColor(R.color.state_alert);
         if (doorOpen && windowOpen) {
             setMode(MODE_ALTERNATE);
         } else if (doorOpen) {
@@ -104,7 +107,7 @@ public class DoorCircleView extends View {
             setMode(MODE_HIDDEN);
             return;
         }
-        color = 0xFFFF5A5A;
+        color = getResources().getColor(R.color.state_alert);
         setModeStatic("后备箱开");
     }
 
@@ -222,10 +225,10 @@ public class DoorCircleView extends View {
         canvas.drawCircle(cx, cy, r, ringPaint);
 
         // ---- 3. 内侧微光晕 ----
-        Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        glow.setShader(new RadialGradient(cx, cy, r,
+        Paint innerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        innerGlow.setShader(new RadialGradient(cx, cy, r,
                 (color & 0x00FFFFFF) | 0x1A000000, 0x00000000, Shader.TileMode.CLAMP));
-        canvas.drawCircle(cx, cy, r, glow);
+        canvas.drawCircle(cx, cy, r, innerGlow);
 
         // ---- 4. 文字渐隐渐显 ----
         // alpha 曲线：0→1→0（正弦上半波），phase 0=透明 0.5=最亮 1=透明
@@ -243,8 +246,13 @@ public class DoorCircleView extends View {
         float maxValPx = (Math.min(w, h) / d) * 0.26f * d;
         float textSize = fitTextSize(textPaint, display, maxTextW, maxValPx);
         textPaint.setTextSize(textSize);
-        textPaint.setColor((textAlphaInt << 24) | (color & 0xFFFFFF));
-        textPaint.setShadowLayer(4f * d, 0, 0, (textAlphaInt << 24) | (color & 0xFFFFFF));
+        int cFull = (textAlphaInt << 24) | (color & 0xFFFFFF);
+        textPaint.setColor(cFull);
+        if (glow) {
+            textPaint.setShadowLayer(4f * d, 0, 0, cFull);   // LED 发光（夜间）
+        } else {
+            textPaint.setShadowLayer(0f, 0, 0, 0);           // 白天关发光
+        }
 
         float valBaseline = cy - (textPaint.getFontMetrics().ascent + textPaint.getFontMetrics().descent) / 2f;
         canvas.drawText(display, cx, valBaseline, textPaint);

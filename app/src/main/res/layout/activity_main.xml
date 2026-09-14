@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#060A14">
+    android:background="@color/bg_page">
 
     <!-- ============ 顶部横幅：档位/续航/总里程/机油/燃油 (占10%) ============ -->
     <LinearLayout
@@ -14,7 +14,7 @@
         android:layout_weight="10"
         android:orientation="horizontal"
         android:gravity="center"
-        android:background="#0B1424">
+        android:background="@color/bg_banner">
 
         <!-- 档位 -->
         <LinearLayout
@@ -29,21 +29,19 @@
                 android:layout_height="wrap_content"
                 android:text="P"
                 android:textSize="20sp"
-                android:textColor="#00E5FF"
+                android:textColor="@color/text_bright"
                 android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:shadowColor="#00E5FF"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+                android:textStyle="bold"/>
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="档位"
                 android:textSize="7sp"
-                android:textColor="#5C7A99"
+                android:textColor="@color/text_label"
                 android:letterSpacing="0.3"/>
         </LinearLayout>
 
-        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="@color/divider"/>
 
         <!-- 续航 -->
         <LinearLayout
@@ -59,21 +57,19 @@
                 android:layout_height="wrap_content"
                 android:text="503km"
                 android:textSize="20sp"
-                android:textColor="#00FF9D"
+                android:textColor="@color/text_bright"
                 android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:shadowColor="#00FF9D"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+                android:textStyle="bold"/>
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="续航里程"
                 android:textSize="7sp"
-                android:textColor="#5C7A99"
+                android:textColor="@color/text_label"
                 android:letterSpacing="0.3"/>
         </LinearLayout>
 
-        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="@color/divider"/>
 
         <!-- 总里程 -->
         <LinearLayout
@@ -89,21 +85,19 @@
                 android:layout_height="wrap_content"
                 android:text="74,595 km"
                 android:textSize="20sp"
-                android:textColor="#EAF6FF"
+                android:textColor="@color/text_bright"
                 android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:shadowColor="#00E5FF"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="6"/>
+                android:textStyle="bold"/>
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="总里程"
                 android:textSize="7sp"
-                android:textColor="#5C7A99"
+                android:textColor="@color/text_label"
                 android:letterSpacing="0.3"/>
         </LinearLayout>
 
-        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="@color/divider"/>
 
         <!-- 燃油 -->
         <LinearLayout
@@ -119,21 +113,19 @@
                 android:layout_height="wrap_content"
                 android:text="81%"
                 android:textSize="20sp"
-                android:textColor="#00E5FF"
+                android:textColor="@color/text_bright"
                 android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:shadowColor="#00E5FF"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+                android:textStyle="bold"/>
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="燃油"
                 android:textSize="7sp"
-                android:textColor="#5C7A99"
+                android:textColor="@color/text_label"
                 android:letterSpacing="0.3"/>
         </LinearLayout>
 
-        <View android:layout_width="1dp" android:layout_height="24dp" android:background="#1E3048"/>
+        <View android:layout_width="1dp" android:layout_height="24dp" android:background="@color/divider"/>
 
         <!-- 机油 -->
         <LinearLayout
@@ -148,17 +140,15 @@
                 android:layout_height="wrap_content"
                 android:text="75%"
                 android:textSize="20sp"
-                android:textColor="#00E5FF"
+                android:textColor="@color/text_bright"
                 android:fontFamily="monospace"
-                android:textStyle="bold"
-                android:shadowColor="#00E5FF"
-                android:shadowDx="0" android:shadowDy="0" android:shadowRadius="8"/>
+                android:textStyle="bold"/>
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="机油寿命"
                 android:textSize="7sp"
-                android:textColor="#5C7A99"
+                android:textColor="@color/text_label"
                 android:letterSpacing="0.3"/>
         </LinearLayout>
     </LinearLayout>
@@ -177,7 +167,7 @@
             android:layout_gravity="center"
             android:adjustViewBounds="true"
             android:scaleType="fitCenter"
-            android:src="@drawable/car_top"
+            android:src="@drawable/car_top_sel"
             android:padding="6dp"
             android:layout_marginStart="30dp"
             android:layout_marginEnd="30dp"
@@ -191,10 +181,10 @@
             android:layout_height="wrap_content"
             android:text="0"
             android:textSize="50sp"
-            android:textColor="#EAF6FF"
+            android:textColor="@color/text_bright"
             android:fontFamily="monospace"
             android:textStyle="bold"
-            android:shadowColor="#00E5FF"
+            android:shadowColor="@color/accent_cyan"
             android:shadowDx="0" android:shadowDy="0" android:shadowRadius="14"
             android:layout_gravity="center_horizontal|top"
             android:layout_marginTop="8dp"/>
@@ -290,11 +280,11 @@
                 android:paddingTop="5dp" android:paddingBottom="6dp">
                 <TextView
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="主驾" android:textSize="7sp" android:textColor="#5C7A99"/>
+                    android:text="主驾" android:textSize="7sp" android:textColor="@color/text_label"/>
                 <TextView
                     android:id="@+id/tvTempDriver"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="23.0℃" android:textSize="16sp" android:textColor="#EAF6FF"
+                    android:text="23.0℃" android:textSize="16sp" android:textColor="@color/text_bright"
                     android:fontFamily="monospace" android:textStyle="bold"/>
             </LinearLayout>
 
@@ -310,11 +300,11 @@
                 android:paddingTop="5dp" android:paddingBottom="6dp">
                 <TextView
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="车内PM2.5" android:textSize="7sp" android:textColor="#5C7A99"/>
+                    android:text="车内PM2.5" android:textSize="7sp" android:textColor="@color/text_label"/>
                 <TextView
                     android:id="@+id/tvPm"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="4" android:textSize="16sp" android:textColor="#00FF9D"
+                    android:text="4" android:textSize="16sp" android:textColor="@color/accent_green"
                     android:fontFamily="monospace" android:textStyle="bold"/>
             </LinearLayout>
 
@@ -330,11 +320,11 @@
                 android:paddingTop="5dp" android:paddingBottom="6dp">
                 <TextView
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="副驾" android:textSize="7sp" android:textColor="#5C7A99"/>
+                    android:text="副驾" android:textSize="7sp" android:textColor="@color/text_label"/>
                 <TextView
                     android:id="@+id/tvTempPassenger"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="23.0℃" android:textSize="16sp" android:textColor="#EAF6FF"
+                    android:text="23.0℃" android:textSize="16sp" android:textColor="@color/text_bright"
                     android:fontFamily="monospace" android:textStyle="bold"/>
         </LinearLayout>
         </LinearLayout>
