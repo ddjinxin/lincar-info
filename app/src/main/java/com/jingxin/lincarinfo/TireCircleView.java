@@ -205,8 +205,8 @@ public class TireCircleView extends View {
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        boolean landscape = getResources().getDisplayMetrics().widthPixels
-                > getResources().getDisplayMetrics().heightPixels * 1.2f;
+        boolean landscape = getResources().getConfiguration().screenWidthDp
+                > getResources().getConfiguration().screenHeightDp * 1.2f;
         float dp = landscape ? DIAMETER_DP_LANDSCAPE : DIAMETER_DP_PORTRAIT;
         int size = Math.round(dp * density());
         setMeasuredDimension(size, size);

@@ -240,6 +240,19 @@ public class MainActivity extends Activity {
     private final HashMap<Integer, TireData> tireData = new HashMap<>();
     /** 首次收到某 sensor 数据时记录一次完整内容 */
     private final HashSet<Integer> firstDataLogged = new HashSet<>();
+
+    /** 需要记录值变化的传感器类型（仅待验证参数，已验证的不记） */
+    private static final HashSet<Integer> MONITORED_TYPES = new HashSet<>();
+    static {
+        MONITORED_TYPES.add(11);                   // 11 挡位结合状态(0=P/31=行驶)【待验证：挂挡】
+        MONITORED_TYPES.add(52);                   // 52 驻车/驱动状态【待重验：拉手刹无变化】
+        MONITORED_TYPES.add(67);                   // 67 电源档位(12=ON/0=OFF)【已实锤】
+        MONITORED_TYPES.add(68);                   // 68 左转向灯【已实锤，高频闪烁日志量大但短暂】
+        MONITORED_TYPES.add(69);                   // 69 右转向灯【已实锤】
+        MONITORED_TYPES.add(72);                   // 72 点火电源位(1=ON/0=LOCK)【已实锤】
+    }
+    /** 监控参数上次值（用于变化检测，key=sensorType） */
+    private final HashMap<Integer, String> lastSensorValue = new HashMap<>();
     /** 已注册的传感器集合（动态枚举，车机只认厂商小数字 ID） */
     private final HashSet<Integer> registeredSensors = new HashSet<>();
     /** carinfo.log 节流 */
@@ -298,16 +311,28 @@ public class MainActivity extends Activity {
 
     // ========== 仪表盘 UI 辅助（V2） ==========
 
-    /** 字号等比缩放：布局按 360dp 基准设计，其他宽度按 屏宽dp/360 缩放全部 TextView 字号。
-     *  横屏(宽>高×1.2)时缩放上限 1.5，防止标签字号过大。banner 由 scaleBannerByHeight 单独处理。 */
+    /** 判断当前是否横屏：用 Configuration 的 screenWidthDp/screenHeightDp（反映窗口实际可用尺寸），
+     *  而非屏幕物理分辨率——分屏拖宽时 DisplayMetrics.widthPixels 不变，但 screenWidthDp 会变大。 */
+    private boolean isLandscape() {
+        android.content.res.Configuration cfg = getResources().getConfiguration();
+        return cfg.screenWidthDp > cfg.screenHeightDp * 1.2f;
+    }
+
+    /** 获取窗口实际宽度 dp（用于字号缩放基准，分屏时随窗口宽度变化） */
+    private float windowWidthDp() {
+        android.content.res.Configuration cfg = getResources().getConfiguration();
+        return cfg.screenWidthDp;
+    }
+
+    /** 字号等比缩放：布局按 360dp 基准设计，按 窗口宽度dp/360 缩放全部 TextView 字号。
+     *  横屏(宽>高×1.2)时 scale=1.0 不放大。banner/空调卡由 scaleBannerByHeight/scaleAcCardByHeight 单独处理。 */
     private void applyFontScale() {
         try {
-            DisplayMetrics dm = getResources().getDisplayMetrics();
-            float scale = dm.widthPixels / dm.density / DESIGN_WIDTH_DP;
-            boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
+            float winW = windowWidthDp();
+            float scale = winW / DESIGN_WIDTH_DP;
+            boolean landscape = isLandscape();
             if (landscape) scale = 1.0f;
-            bootLog("[UI] 屏宽=" + dm.widthPixels + "px density=" + dm.densityDpi
-                    + " → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏不放大)" : ""));
+            bootLog("[UI] 窗口宽=" + winW + "dp → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏不放大)" : ""));
             View root = findViewById(R.id.root);
             scaleTextSize(root, scale);
         } catch (Throwable e) {
@@ -325,7 +350,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** banner 字号：横屏(宽>高×1.2)按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
+    /** banner 字号：横屏按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
     private void scaleBannerByHeight() {
         final View banner = findViewById(R.id.banner);
         if (banner == null) return;
@@ -336,9 +361,7 @@ public class MainActivity extends Activity {
                         int bh = banner.getHeight();
                         if (bh <= 0) return;
                         banner.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                        DisplayMetrics dm = getResources().getDisplayMetrics();
-                        boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
-                        if (landscape) {
+                        if (isLandscape()) {
                             float valSize = bh * 0.42f;
                             float lblSize = bh * 0.15f;
                             scaleBannerText(banner, valSize, lblSize);
@@ -367,7 +390,7 @@ public class MainActivity extends Activity {
     }
 
 
-    /** 空调卡字号：横屏(宽>高×1.2)按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
+    /** 空调卡字号：横屏按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
     private void scaleAcCardByHeight() {
         final View acCard = findViewById(R.id.acCard);
         if (acCard == null) return;
@@ -378,9 +401,7 @@ public class MainActivity extends Activity {
                         int ah = acCard.getHeight();
                         if (ah <= 0) return;
                         acCard.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                        DisplayMetrics dm = getResources().getDisplayMetrics();
-                        boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
-                        if (landscape) {
+                        if (isLandscape()) {
                             android.view.ViewGroup cardOuter = (android.view.ViewGroup) acCard;
                             android.view.ViewGroup cardRow = (android.view.ViewGroup) cardOuter.getChildAt(0);
                             // 横屏：三个子区域改为一行显示（标签+数值水平排列）
@@ -462,9 +483,7 @@ public class MainActivity extends Activity {
         bootLog("[UI] carZone=" + zw + "x" + zh + " 镜像对称定位");
 
         // 横屏时增大 ImageView margin，使车图缩到较小边的 90%
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        boolean landscape = dm.widthPixels > dm.heightPixels * 1.2f;
-        if (landscape && ivCar != null) {
+        if (isLandscape() && ivCar != null) {
             // 原始 margin 30dp/24dp，横屏额外加 5% 空间（约 (100%-90%)/2 = 5%）
             int extraW = Math.round(zw * 0.05f);
             int extraH = Math.round(zh * 0.05f);
@@ -533,8 +552,7 @@ public class MainActivity extends Activity {
         int availW = Math.max(1, zw - mL - mR);
         int availH = Math.max(1, zh - mT - mB);
         // 横屏按较小边的 90% 限制
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        if (dm.widthPixels > dm.heightPixels * 1.2f) {
+        if (isLandscape()) {
             availW = (int) (availW * 0.9f);
             availH = (int) (availH * 0.9f);
         }
@@ -583,9 +601,9 @@ public class MainActivity extends Activity {
         return td != null && td.pressure < 200f && td.pressure < 65533f;
     }
 
-    /** 门窗异常判定：门开或窗开（窗 0=开 1=关，-1 无数据） */
+    /** 门窗异常判定：门开或窗未关（窗 1=关，其余有效值都算未关，-1 无数据。对齐 CarLauncher dn.f()） */
     private boolean doorAlert(Object doorEv, int winState) {
-        return getInt(doorEv) > 0 || winState == 0;
+        return getInt(doorEv) > 0 || (winState >= 0 && winState != 1);
     }
 
     /**
@@ -1220,22 +1238,13 @@ public class MainActivity extends Activity {
     static {
         SENSOR_GUESS.put(5,  "可能:行驶方向?");
         SENSOR_GUESS.put(9,  "可能:安全带?");
-        SENSOR_GUESS.put(11, "可能:低速模式?");
-        SENSOR_GUESS.put(49, "可能:电池电压?");
-        SENSOR_GUESS.put(50, "可能:电池电流?");
-        SENSOR_GUESS.put(51, "机油寿命%");
-        SENSOR_GUESS.put(52, "可能:脚刹?");
-        SENSOR_GUESS.put(62, "可能:车内温度?");
-        SENSOR_GUESS.put(63, "可能:大灯?");
-        SENSOR_GUESS.put(64, "可能:充电状态?");
-        SENSOR_GUESS.put(65, "可能:快慢充?");
-        SENSOR_GUESS.put(66, "可能:巡航?");
-        SENSOR_GUESS.put(67, "可能:充电功率?");
-        SENSOR_GUESS.put(68, "可能:驾驶模式?");
-        SENSOR_GUESS.put(69, "可能:能量回收?");
-        SENSOR_GUESS.put(70, "可能:AC状态?");
-        SENSOR_GUESS.put(71, "可能:窗户状态?");
-        SENSOR_GUESS.put(72, "可能:车辆动态?");
+        SENSOR_GUESS.put(11, "挡位结合(0=P/31=行驶)");
+        SENSOR_GUESS.put(52, "驻车驱动(待重验:拉手刹无变化)");
+        SENSOR_GUESS.put(63, "非大灯(开关无反应)");
+        SENSOR_GUESS.put(67, "电源档位(12=ON/0=OFF)");
+        SENSOR_GUESS.put(68, "左转向灯(3=亮/1=灭/0=关)");
+        SENSOR_GUESS.put(69, "右转向灯(3=亮/1=灭/0=关)");
+        SENSOR_GUESS.put(72, "点火电源位(1=ON/0=LOCK)");
     }
 
     private static String sensorName(int type) {
@@ -1245,14 +1254,25 @@ public class MainActivity extends Activity {
         return g != null ? "未知" + type + "(" + g + ")" : "未知" + type;
     }
 
-    /** 首次收到某类型数据时，把完整内容记录到日志 */
+    /** 首次收到某类型数据时，把完整内容记录到日志；监控参数值变化时也记录 */
     private void cacheSensorEvent(Object ev) {
         if (ev == null) return;
         try {
             java.lang.reflect.Field typeField = ev.getClass().getField("sensorType");
             int type = typeField.getInt(ev);
+            String summary = eventSummary(ev);
             if (firstDataLogged.add(type)) {
-                bootLog("[数据] 首次收到 sensor type=" + type + ": " + eventSummary(ev));
+                bootLog("[数据] 首次收到 sensor type=" + type + ": " + summary);
+            }
+            // 监控参数值变化检测（排除车速type=2/总里程type=4等高频或极慢变化）
+            if (MONITORED_TYPES.contains(type)) {
+                String old = lastSensorValue.get(type);
+                if (old == null || !old.equals(summary)) {
+                    if (old != null) {  // 首次已有"首次收到"日志，跳过；仅记录后续变化
+                        bootLog("[传感器] " + sensorName(type) + "(" + type + ") 变化: " + old + " → " + summary);
+                    }
+                    lastSensorValue.put(type, summary);
+                }
             }
             switch (type) {
                 case SENSOR_ODOMETER: evOdometer = ev; break;
@@ -1813,15 +1833,19 @@ public class MainActivity extends Activity {
                     break;
                 case YF_WIN_DRIVER:
                     winDriver = val instanceof Integer ? (Integer) val : -1;
+                    bootLog("[新风] 司机车窗推送=" + winDriver + (winDriver == 0 ? "(开)" : winDriver == 1 ? "(关)" : "(?)"));
                     break;
                 case YF_WIN_PASSENGER:
                     winPassenger = val instanceof Integer ? (Integer) val : -1;
+                    bootLog("[新风] 副驾车窗推送=" + winPassenger + (winPassenger == 0 ? "(开)" : winPassenger == 1 ? "(关)" : "(?)"));
                     break;
                 case YF_WIN_LEFT_REAR:
                     winLeftRear = val instanceof Integer ? (Integer) val : -1;
+                    bootLog("[新风] 左后车窗推送=" + winLeftRear + (winLeftRear == 0 ? "(开)" : winLeftRear == 1 ? "(关)" : "(?)"));
                     break;
                 case YF_WIN_RIGHT_REAR:
                     winRightRear = val instanceof Integer ? (Integer) val : -1;
+                    bootLog("[新风] 右后车窗推送=" + winRightRear + (winRightRear == 0 ? "(开)" : winRightRear == 1 ? "(关)" : "(?)"));
                     break;
                     default:
                         // 胎压单位（fl.java: a(bArr,i)=(b[i]<<8)|b[i+1] 两字节大端；
@@ -2229,11 +2253,12 @@ public class MainActivity extends Activity {
         return cut > 0 ? s.substring(0, cut) : s;   // 未知单位双显时整体作数值
     }
 
-    /** 门窗圆形标签刷新：传入门窗状态，DoorCircleView 内部决定显示/隐藏和动画 */
+    /** 门窗圆形标签刷新：传入门窗状态，DoorCircleView 内部决定显示/隐藏和动画。
+     *  窗值对齐 CarLauncher dn.f()：1=关，其余有效值（0/2/3…）都算未关，-1 无数据 */
     private void updateDoorCircle(DoorCircleView v, Object doorEv, int winState) {
         if (v == null) return;
         boolean doorOpen = getInt(doorEv) > 0;
-        boolean winOpen = winState == 0;   // 0=开 1=关 -1=无数据
+        boolean winOpen = winState >= 0 && winState != 1;   // 1=关，其余有效值=未关
         v.update(doorOpen, winOpen);
     }
 
