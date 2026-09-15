@@ -224,7 +224,20 @@ android:layout_marginStart="4dp"
             android:shadowColor="@color/accent_cyan"
             android:shadowDx="0" android:shadowDy="0" android:shadowRadius="14"
             android:layout_gravity="center_horizontal|top"
+            android:gravity="center"
             android:layout_marginTop="8dp"/>
+
+        <!-- 左转向灯 -->
+        <com.jingxin.lincarinfo.TurnSignalView
+            android:id="@+id/turnLeft"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <!-- 右转向灯 -->
+        <com.jingxin.lincarinfo.TurnSignalView
+            android:id="@+id/turnRight"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
 
         <!-- 红点+虚线标注层（车图上层、标签下层） -->
         <com.jingxin.lincarinfo.TagLineOverlay
@@ -298,9 +311,7 @@ android:layout_marginStart="4dp"
         android:background="@drawable/bg_card"
         android:layout_marginBottom="10dp"
         android:paddingStart="10dp"
-        android:paddingEnd="10dp"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp">
+        android:paddingEnd="10dp">
 
         <!-- 主驾 / PM2.5 / 副驾 三格 -->
         <LinearLayout

@@ -26,9 +26,9 @@ import android.view.animation.LinearInterpolator;
  */
 public class TireCircleView extends View {
 
-    /** 圆形直径（dp）：竖屏 70dp，横屏 50dp */
+    /** 圆形直径 dp：竖屏横屏统一 80dp，由 circleScale + 宽度约束缩放 */
     private static final float DIAMETER_DP_PORTRAIT = 80f;
-    private static final float DIAMETER_DP_LANDSCAPE = 50f;
+    private static final float DIAMETER_DP_LANDSCAPE = 80f;
     /** 呼吸环最大外扩比例 */
     private static final float BREATH_MAX = 1.5f;
     /** 正常呼吸周期 ms */
@@ -49,6 +49,7 @@ public class TireCircleView extends View {
     /** dp 缩放比例（由 MainActivity.applyFontScale 设置，随屏宽等比缩放） */
     private float dpScale = 1f;
     public void setDpScale(float scale) { this.dpScale = scale; }
+    public float getDpScale() { return dpScale; }
 
     /** 颜色：正常绿 / 无效灰 / 琥珀 / 异常红（从资源读，日夜自适应） */
     public static int colorOk(Context c) { return c.getResources().getColor(R.color.state_ok); }

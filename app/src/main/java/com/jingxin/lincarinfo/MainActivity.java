@@ -15,6 +15,7 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.text.SpannableString;
+import android.text.style.RelativeSizeSpan;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
@@ -76,6 +77,8 @@ public class MainActivity extends Activity {
     private static final int SENSOR_DOOR_RR = 59;
     private static final int SENSOR_TRUNK_IN = 60;
     private static final int SENSOR_DOOR_TRUNK_OUT = 61;
+    private static final int SENSOR_TURN_LEFT = 68;     // 左转向灯（3=亮/1=灭/0=关）
+    private static final int SENSOR_TURN_RIGHT = 69;    // 右转向灯（3=亮/1=灭/0=关）
     // 标准大数字 PROPERTY_ID 传感器（挡位 289408000/手刹 287310850 等）已删——
     // 19:58 车机实测全部 invalid sensor type，车机只认厂商小数字 ID
 
@@ -96,6 +99,8 @@ public class MainActivity extends Activity {
         SENSOR_NAMES.put(SENSOR_DOOR_RR, "右后门");
         SENSOR_NAMES.put(SENSOR_TRUNK_IN, "后备箱内");
         SENSOR_NAMES.put(SENSOR_DOOR_TRUNK_OUT, "后备箱外");
+        SENSOR_NAMES.put(SENSOR_TURN_LEFT, "左转向灯");
+        SENSOR_NAMES.put(SENSOR_TURN_RIGHT, "右转向灯");
         // 未知小数字 ID 保留原编号（车机 19:58 实测支持 5/9/11/49-52/62-72，待用户验证含义）
     }
 
@@ -158,8 +163,6 @@ public class MainActivity extends Activity {
     }
     /** 枚举到的 HVAC 属性：key=propId，value="区域列表|读到的值" */
     private final TreeMap<Integer, String> hvacProps = new TreeMap<>();
-    /** HVAC 推送计数（propId → 次数），避免刷爆日志 */
-    private final HashMap<Integer, Integer> hvacPushCount = new HashMap<>();
     /** 里程单位：0=km 1=mi（照抄 CarLauncher eh.w，由 PROP_MILEAGE_UNIT 读出） */
     private String mileageUnit = "km";
 
@@ -174,7 +177,7 @@ public class MainActivity extends Activity {
     // ========== 仪表盘 UI 控件（V2） ==========
     // 旧版 tvStatus/tvTireInfo/tvLog 文本界面已废弃：ui()/setStatus() 降级为仅写日志，
     // 数据快照由 buildDataSnapshot() 构造文本写 carinfo.log。
-    private static final float DESIGN_WIDTH_DP = 360f;   // 效果图 720px@2x → 360dp 基准
+    private static final float DESIGN_HEIGHT_DP = 640f;   // 竖屏基准高度 dp（车机 584x1057 → ~640dp 高）
 
     private TextView tvGear, tvRange, tvOdo, tvOil, tvFuel, tvSpeed;
     private TextView tvRangeUnit, tvOdoUnit;
@@ -183,6 +186,7 @@ public class MainActivity extends Activity {
     private DoorCircleView tagLFDw, tagRFDw, tagLRDw, tagRRDw;
     private TireCircleView tagLFTire, tagRFTire, tagLRTire, tagRRTire;
     private DoorCircleView tagTrunk;
+    private TurnSignalView turnLeft, turnRight;
     private ImageView ivCar;
     private View carZone;
     private TagLineOverlay tagLines;
@@ -235,11 +239,11 @@ public class MainActivity extends Activity {
         return v == 1 ? "关" : "开";
     }
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final StringBuilder logBuilder = new StringBuilder();
 
     // 缓存最新传感器事件
     private Object evOdometer, evSpeed, evGear, evRange, evFuelPct, evFuelWarn, evIgnition, evOilLife;
     private Object evDoorLB, evDoorRB, evDoorLR, evDoorRR, evTrunkIn, evTrunkOut;
+    private Object evTurnLeft, evTurnRight;
     /** 其余传感器（手刹/RPM等）最新事件，key=sensorType */
     private final HashMap<Integer, Object> evOthers = new HashMap<>();
     private final HashMap<Integer, TireData> tireData = new HashMap<>();
@@ -261,13 +265,13 @@ public class MainActivity extends Activity {
     /** 已注册的传感器集合（动态枚举，车机只认厂商小数字 ID） */
     private final HashSet<Integer> registeredSensors = new HashSet<>();
     /** carinfo.log 节流 */
-    private long lastFileWrite;
 
     // ========== 日夜模式（两态：白天 / 夜间，页面单击切换 + 高德导航广播自动切换） ==========
     /** SP 文件名与键 */
     private static final String PREF_UI = "ui";
     private static final String KEY_DAY_MODE = "day_mode";   // 0=夜间 1=白天（默认夜间）
     private static final String KEY_AMAP_TRIGGERED = "amap_triggered"; // 高德是否触发过
+    private static final String KEY_HVAC_TEMP = "hvac_temp";     // 上次HVAC真实温度（防ECU上电默认32℃）
     static final int MODE_NIGHT = 0;
     static final int MODE_DAY = 1;
     private int uiModePref = MODE_NIGHT;
@@ -390,8 +394,8 @@ public class MainActivity extends Activity {
         // 全局崩溃捕获：写文件后转发系统处理器（不吞异常，避免假死黑屏）
         final Thread.UncaughtExceptionHandler def = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-            bootLog("*** 崩溃 *** 线程=" + thread.getName() + " " + throwable.getClass().getName());
-            bootLog(stackTrace(throwable));
+            crashLog("*** 崩溃 *** 线程=" + thread.getName() + " " + throwable.getClass().getName());
+            crashLog(stackTrace(throwable));
             if (def != null) def.uncaughtException(thread, throwable);
         });
 
@@ -449,20 +453,21 @@ public class MainActivity extends Activity {
         return cfg.screenWidthDp;
     }
 
-    /** 字号等比缩放：布局按 360dp 基准设计，按 窗口宽度dp/360 缩放全部 TextView 字号。
-     *  横屏(宽>高×1.2)时 scale=1.0 不放大。banner/空调卡由 scaleBannerByHeight/scaleAcCardByHeight 单独处理。 */
+    /** 字号等比缩放：统一按窗口高度 dp 缩放，分屏拖宽时字号不变。
+     *  竖屏按 screenHeightDp/640，横屏按 screenWidthDp/640（横屏时宽度是较短边）。
+     *  banner/空调卡由 scaleBannerByHeight/scaleAcCardByHeight 按实际像素高度单独处理。 */
     private void applyFontScale() {
         try {
-            float winW = windowWidthDp();
-            float scale = winW / DESIGN_WIDTH_DP;
+            android.content.res.Configuration cfg = getResources().getConfiguration();
             boolean landscape = isLandscape();
-            if (landscape) scale = 1.0f;
-            bootLog("[UI] 窗口宽=" + winW + "dp → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏不放大)" : ""));
+            // 横屏时高度是 screenWidthDp（旋转后短边），竖屏时高度是 screenHeightDp
+            float refDp = landscape ? cfg.screenWidthDp : cfg.screenHeightDp;
+            float scale = Math.min(refDp / DESIGN_HEIGHT_DP, 1.5f);  // 上限 1.5 防过大
+            scale = Math.max(scale, 0.5f);                          // 下限 0.5 防过小
+            bootLog("[UI] 参考高度=" + refDp + "dp → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏)" : ""));
             View root = findViewById(R.id.root);
             scaleTextSize(root, scale);
-            // 圆形标签缩放：竖屏按屏宽/540dp，横屏按屏高/540dp，下限 0.5 防过小
-            float refDp = landscape ? getResources().getConfiguration().screenHeightDp
-                    : getResources().getConfiguration().screenWidthDp;
+            // 圆形标签用同一套高度缩放，保持一致
             float circleScale = Math.min(refDp / 540f, 1f);
             circleScale = Math.max(circleScale, 0.5f);
             if (tagLFTire != null) tagLFTire.setDpScale(circleScale);
@@ -489,7 +494,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** banner 字号：横屏按高度比例覆盖；竖屏按宽度自适应防止折行 */
+    /** banner 字号：按 banner 实际像素高度缩放，横屏竖屏统一。
+     *  竖屏额外检查内容宽度是否溢出，溢出则等比缩小。 */
     private void scaleBannerByHeight() {
         final View banner = findViewById(R.id.banner);
         if (banner == null) return;
@@ -507,9 +513,12 @@ public class MainActivity extends Activity {
                             scaleBannerText(banner, valSize, lblSize);
                             bootLog("[UI] 横屏 banner高=" + bh + "px → 数值" + valSize + "px 标签" + lblSize + "px(按高度)");
                         } else {
-                            // 竖屏：测量内容宽度，如溢出则等比缩小字号+间距
+                            // 竖屏：先按高度设字号，再检查宽度是否溢出
+                            float valSize = bh * 0.42f;
+                            float lblSize = bh * 0.15f;
+                            scaleBannerText(banner, valSize, lblSize);
                             fitBannerWidth(banner, bw);
-                            bootLog("[UI] 竖屏 banner高=" + bh + "px 宽=" + bw + "px → 自适应宽度");
+                            bootLog("[UI] 竖屏 banner高=" + bh + "px 宽=" + bw + "px → 按高度+宽度溢出检查");
                         }
                     } catch (Throwable e) {
                         bootLog("[UI] scaleBannerByHeight 失败: " + rootCause(e));
@@ -568,15 +577,56 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 递归设 banner 内 TextView 字号：有 id 的设 valSize，无 id 的设 lblSize */
+    /** 递归设 banner 内 TextView 字号：有 id 的设 valSize，无 id 的设 lblSize。
+     *  单位 TextView（tvRangeUnit/tvOdoUnit）单独按 valSize 的 0.5 倍，比数值小一半。 */
     private void scaleBannerText(View v, float valSize, float lblSize) {
         if (v instanceof TextView) {
             TextView tv = (TextView) v;
-            float size = (tv.getId() != View.NO_ID) ? valSize : lblSize;
+            int id = tv.getId();
+            float size;
+            if (id == R.id.tvRangeUnit || id == R.id.tvOdoUnit) {
+                size = valSize * 0.5f;   // 单位字号 = 数值的 50%
+            } else if (id != View.NO_ID) {
+                size = valSize;           // 数值
+            } else {
+                size = lblSize;           // 标签
+            }
             tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
         } else if (v instanceof android.view.ViewGroup) {
             android.view.ViewGroup g = (android.view.ViewGroup) v;
             for (int i = 0; i < g.getChildCount(); i++) scaleBannerText(g.getChildAt(i), valSize, lblSize);
+        }
+    }
+
+    /** acCard 宽度溢出检查：测量每个 zone 内最宽 TextView 是否超出 zone 可用宽度，
+     *  溢出则等比缩小该 zone 内所有 TextView 字号，保证不折行不截断。 */
+    private void fitAcCardWidth(View acCard) {
+        if (!(acCard instanceof android.view.ViewGroup)) return;
+        android.view.ViewGroup cardOuter = (android.view.ViewGroup) acCard;
+        if (cardOuter.getChildCount() == 0) return;
+        View cardRow = cardOuter.getChildAt(0);
+        if (!(cardRow instanceof android.view.ViewGroup)) return;
+        android.view.ViewGroup row = (android.view.ViewGroup) cardRow;
+        for (int i = 0; i < row.getChildCount(); i++) {
+            View child = row.getChildAt(i);
+            if (!(child instanceof android.view.ViewGroup)) continue;
+            android.view.ViewGroup zone = (android.view.ViewGroup) child;
+            int zoneW = zone.getWidth() - zone.getPaddingLeft() - zone.getPaddingRight();
+            if (zoneW <= 0) continue;
+            // 找 zone 内最宽的 TextView
+            int maxTextW = 0;
+            for (int j = 0; j < zone.getChildCount(); j++) {
+                View tv = zone.getChildAt(j);
+                if (tv instanceof TextView) {
+                    tv.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+                    maxTextW = Math.max(maxTextW, ((TextView) tv).getMeasuredWidth());
+                }
+            }
+            if (maxTextW > zoneW && maxTextW > 0) {
+                float ratio = (float) zoneW / maxTextW;
+                scaleBannerTextByRatio(zone, ratio);
+                bootLog("[UI] acCard zone" + i + " 内容=" + maxTextW + "px > 可用=" + zoneW + "px → 缩放" + String.format("%.2f", ratio));
+            }
         }
     }
 
@@ -628,7 +678,12 @@ public class MainActivity extends Activity {
                                 bootLog("[UI] 横屏 acCard高=" + ah + " zoneH=" + zoneH + " → 一行显示 数值" + valSize + "px 标签" + lblSize + "px");
                             }
                         } else {
-                            bootLog("[UI] 竖屏 acCard高=" + ah + "px → 保持 applyFontScale 宽度缩放");
+                            // 竖屏：按 acCard 总高度缩放，文字渲染高度占75%（与 banner 一致），忽略 padding
+                            float valSize = ah * 0.45f;   // 数值 45%
+                            float lblSize = ah * 0.15f;   // 标签 15%（合计60%，×1.25渲染=75%）
+                            scaleBannerText(acCard, valSize, lblSize);
+                            fitAcCardWidth(acCard);
+                            bootLog("[UI] 竖屏 acCard高=" + ah + "px → 数值" + valSize + "px 标签" + lblSize + "px(按总高75%)");
                         }
                     } catch (Throwable e) {
                         bootLog("[UI] scaleAcCardByHeight 失败: " + rootCause(e));
@@ -659,10 +714,13 @@ public class MainActivity extends Activity {
                     @Override
                     public void onGlobalLayout() {
                         try {
-                            // 第 1 遍布局量出标签尺寸，第 2 遍（margin 变更触发）再校准定位
-                            positionCarTags();
-                            if (++pass == 1) {
-                                carZone.requestLayout();   // 触发第二遍，此时标签已量宽高
+                            // pass 0: 初始测量 → positionCarTags 可能缩小圆形 → requestLayout
+                            // pass 1: 圆形新尺寸到位 → positionCarTags 最终定位 → requestLayout
+                            // pass 2: 定型，收工
+                            boolean needRelayout = positionCarTags();
+                            if (needRelayout && pass < 2) {
+                                pass++;
+                                carZone.requestLayout();
                             } else {
                                 carZone.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                             }
@@ -674,20 +732,14 @@ public class MainActivity extends Activity {
                 });
     }
 
-    private void positionCarTags() {
+    /**
+     * 车图区标签定位 + 圆形宽度溢出检测。
+     * @return true 如果因宽度不足缩小了圆形尺寸，调用方需 requestLayout 重新测量。
+     */
+    private boolean positionCarTags() {
         int zw = carZone.getWidth(), zh = carZone.getHeight();
-        if (zw <= 0 || zh <= 0) return;
+        if (zw <= 0 || zh <= 0) return false;
         bootLog("[UI] carZone=" + zw + "x" + zh + " 镜像对称定位");
-
-        // 横屏时增大 ImageView margin，使车图缩到较小边的 90%
-        if (isLandscape() && ivCar != null) {
-            // 原始 margin 30dp/24dp，横屏额外加 5% 空间（约 (100%-90%)/2 = 5%）
-            int extraW = Math.round(zw * 0.05f);
-            int extraH = Math.round(zh * 0.05f);
-            android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) ivCar.getLayoutParams();
-            lp.setMargins(dip(30) + extraW, dip(24) + extraH, dip(30) + extraW, dip(24) + extraH);
-            ivCar.setLayoutParams(lp);
-        }
 
         float tireEdgeX = zw * 0.14f;       // 胎压标签离左/右边缘 14%
         float dwEdgeX = zw * 0.06f;        // 门窗标签离左/右边缘 6%
@@ -695,6 +747,37 @@ public class MainActivity extends Activity {
         // 对称轴：前后门窗标注点中点 y=52.5%（相对车图 fitH）
         float[] r = carImgRect(zw, zh);
         float axisY = r[1] + r[3] * 0.525f;
+
+        // —— 宽度溢出检测：圆形标签右边缘不能超过车体实际边缘 ——
+        // 车图 PNG 两侧有透明区，不能用整张图边缘 r[0] 来约束，
+        // 用轮胎外缘 21.9%（车体最宽处）作为实际边界
+        float carBodyLeft = r[0] + r[2] * 0.219f;
+        float carBodyRight = r[0] + r[2] * 0.781f;
+        // 门窗标签基准最大（统一 100dp），且离边最近（6%），约束最紧
+        float dwBaseDp = 100f;
+        float density = getResources().getDisplayMetrics().density;
+        // 门窗可用宽度 = 车体左边缘 - 门窗标签左边缘
+        float dwAvail = carBodyLeft - dwEdgeX;
+        // 宽度缩放因子 = 可用宽度 / 门窗基准直径(px)
+        float widthScale = dwAvail / (dwBaseDp * density);
+        widthScale = Math.max(widthScale, 0.3f);   // 下限防极端
+
+        // 高度缩放因子（与 applyFontScale 中一致）
+        android.content.res.Configuration cfg = getResources().getConfiguration();
+        float refDp = isLandscape() ? cfg.screenWidthDp : cfg.screenHeightDp;
+        float heightScale = Math.min(refDp / 540f, 1f);
+        heightScale = Math.max(heightScale, 0.5f);
+
+        // 最终取两者较小值
+        float finalScale = Math.min(heightScale, widthScale);
+        if (finalScale < heightScale) {
+            bootLog("[UI] 圆形宽度约束: 宽度scale=" + String.format("%.2f", widthScale)
+                    + " < 高度scale=" + String.format("%.2f", heightScale)
+                    + " → 取" + String.format("%.2f", finalScale) + " (可用=" + dwAvail + "px)");
+        }
+
+        // 如果 finalScale 比当前 circleScale 小，更新所有圆形标签
+        boolean needRelayout = applyCircleScaleIfNeeded(finalScale);
 
         // 前胎压标签：跟随车图顶部，留一定间距
         float tireTopY = r[1] - dip(6);
@@ -722,7 +805,6 @@ public class MainActivity extends Activity {
             int w = tagTrunk.getWidth(), h = tagTrunk.getHeight();
             android.widget.FrameLayout.LayoutParams lp =
                     (android.widget.FrameLayout.LayoutParams) tagTrunk.getLayoutParams();
-            // 水平中心对齐车图中心（非 carZone 中心），使连接线垂直
             float carCenterX = r[0] + r[2] / 2f;
             lp.leftMargin = Math.round(carCenterX - w / 2f);
             lp.topMargin = Math.round(cRL - h / 2f);
@@ -735,24 +817,105 @@ public class MainActivity extends Activity {
         }
         if (tagTrunk != null) tagTrunk.bringToFront();
 
+        // —— 速度字号：根据 banner 底边到车体顶边的实际间距动态计算 ——
+        // tvSpeed 在 carZone 顶部，车体顶边 = r[1] + r[3]*11.4%（车图内车体顶部比例）
+        // 上下各留 15dp，TextView 高度=可用空间，文字 gravity=center 垂直居中
+        if (tvSpeed != null) {
+            float carBodyTop = r[1] + r[3] * 0.114f;
+            float gap = dip(15);
+            float availH = carBodyTop - gap - gap;
+            if (availH > 0) {
+                float textSize = availH / 1.25f;   // 文字渲染高度≈textSize×1.25
+                tvSpeed.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize);
+                tvSpeed.setHeight(Math.round(availH));   // 固定 TextView 高度，配合 gravity=center 居中
+                android.widget.FrameLayout.LayoutParams lp =
+                        (android.widget.FrameLayout.LayoutParams) tvSpeed.getLayoutParams();
+                lp.topMargin = Math.round(gap);
+                tvSpeed.setLayoutParams(lp);
+                bootLog("[UI] 速度字号: 车体顶边=" + carBodyTop + "px 可用=" + availH + "px textSize=" + textSize + "px");
+            }
+        }
+
+        // —— 转向灯定位：速度左右两侧，与速度同一水平线 ——
+        if (turnLeft != null && turnRight != null && tvSpeed != null) {
+            float carBodyTop = r[1] + r[3] * 0.114f;
+            float gap = dip(15);
+            float availH = carBodyTop - gap - gap;
+            float arrowSize = availH > 0 ? availH * 0.8f : dip(30);
+            int sizePx = Math.round(arrowSize);
+            float speedCenterY = gap + availH / 2f;
+            // 速度 TextView 宽度（测量后）
+            tvSpeed.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            int speedW = tvSpeed.getMeasuredWidth();
+            float speedCenterX = zw / 2f;
+            float offset = speedW / 2f + dip(8);  // 速度右边缘 + 8dp 间距
+            // 左转向灯
+            android.widget.FrameLayout.LayoutParams lpL =
+                    (android.widget.FrameLayout.LayoutParams) turnLeft.getLayoutParams();
+            lpL.width = sizePx;
+            lpL.height = sizePx;
+            lpL.leftMargin = Math.round(speedCenterX - offset - sizePx);
+            lpL.topMargin = Math.round(speedCenterY - sizePx / 2f);
+            turnLeft.setLayoutParams(lpL);
+            // 右转向灯
+            android.widget.FrameLayout.LayoutParams lpR =
+                    (android.widget.FrameLayout.LayoutParams) turnRight.getLayoutParams();
+            lpR.width = sizePx;
+            lpR.height = sizePx;
+            lpR.leftMargin = Math.round(speedCenterX + offset);
+            lpR.topMargin = Math.round(speedCenterY - sizePx / 2f);
+            turnRight.setLayoutParams(lpR);
+            turnLeft.bringToFront();
+            turnRight.bringToFront();
+        }
+
         // —— 9 个红点紧贴车图 + 虚线连到标签 ——
         linkTagDots();
+        return needRelayout;
+    }
+
+    /** 按 finalScale 更新所有圆形标签的 dpScale，仅在比当前值小时才更新。
+     *  @return true 如果发生了缩小，调用方需 requestLayout 触发重新测量。 */
+    private boolean applyCircleScaleIfNeeded(float finalScale) {
+        boolean changed = false;
+        if (tagLFTire != null && finalScale < tagLFTire.getDpScale()) {
+            tagLFTire.setDpScale(finalScale); changed = true;
+        }
+        if (tagRFTire != null && finalScale < tagRFTire.getDpScale()) {
+            tagRFTire.setDpScale(finalScale); changed = true;
+        }
+        if (tagLRTire != null && finalScale < tagLRTire.getDpScale()) {
+            tagLRTire.setDpScale(finalScale); changed = true;
+        }
+        if (tagRRTire != null && finalScale < tagRRTire.getDpScale()) {
+            tagRRTire.setDpScale(finalScale); changed = true;
+        }
+        if (tagLFDw != null && finalScale < tagLFDw.getDpScale()) {
+            tagLFDw.setDpScale(finalScale); changed = true;
+        }
+        if (tagRFDw != null && finalScale < tagRFDw.getDpScale()) {
+            tagRFDw.setDpScale(finalScale); changed = true;
+        }
+        if (tagLRDw != null && finalScale < tagLRDw.getDpScale()) {
+            tagLRDw.setDpScale(finalScale); changed = true;
+        }
+        if (tagRRDw != null && finalScale < tagRRDw.getDpScale()) {
+            tagRRDw.setDpScale(finalScale); changed = true;
+        }
+        if (tagTrunk != null && finalScale < tagTrunk.getDpScale()) {
+            tagTrunk.setDpScale(finalScale); changed = true;
+        }
+        return changed;
     }
 
 
-    /** 算车图 fitCenter 显示矩形（1000:1333 比例，4:3），返回 left/top/fitW/fitH。
-     *  横屏(宽>高×1.2)时按较小边的 90% 缩放，给标签留更多空间。 */
+    /** 算车图 fitCenter 显示矩形（1000:1333 比例，4:3），返回 left/top/fitW/fitH。 */
     private float[] carImgRect(int zw, int zh) {
         float ratio = 1333f / 1000f; // 高/宽
         int mL = dip(30) + dip(6), mR = dip(30) + dip(6);
         int mT = dip(24) + dip(6), mB = dip(24) + dip(6);
         int availW = Math.max(1, zw - mL - mR);
         int availH = Math.max(1, zh - mT - mB);
-        // 横屏按较小边的 90% 限制
-        if (isLandscape()) {
-            availW = (int) (availW * 0.9f);
-            availH = (int) (availH * 0.9f);
-        }
         float fitW, fitH;
         if (availW * ratio >= availH) { fitH = availH; fitW = fitH / ratio; }
         else { fitW = availW; fitH = fitW * ratio; }
@@ -874,8 +1037,8 @@ public class MainActivity extends Activity {
         evDoorRB = mockEvent(SENSOR_DOOR_RB, new int[]{0});
         evDoorLR = mockEvent(SENSOR_DOOR_LR, new int[]{0});
         evDoorRR = mockEvent(SENSOR_DOOR_RR, new int[]{1});               // 右后门开
-        evTrunkIn = mockEvent(SENSOR_TRUNK_IN, new int[]{0});
-        evTrunkOut = mockEvent(SENSOR_DOOR_TRUNK_OUT, new int[]{0});
+        evTrunkIn = mockEvent(SENSOR_TRUNK_IN, new int[]{0});              // 后备箱关
+        evTrunkOut = mockEvent(SENSOR_DOOR_TRUNK_OUT, new int[]{0});       // 后备箱关
         // 四轮胎压 220/220/220/225 kPa、胎温 19.5℃
         int[] areas = {1, 2, 4, 8};
         float[] pressures = {220f, 220f, 220f, 225f};
@@ -940,18 +1103,23 @@ public class MainActivity extends Activity {
         refreshDisplay();
     }
 
+    /** 车机不支持 PiP — 首次失败后永久禁用，避免每次 onPause 无效尝试 */
+    private static boolean pipSupported = true;
+
     /** 进入画中画模式 */
     @Override
     @SuppressWarnings("deprecation")
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
+        if (!pipSupported) return;
         try {
             if (android.os.Build.VERSION.SDK_INT >= 26 && checkPiPSupported()) {
                 enterPictureInPictureMode();
                 bootLog("[PiP] 进入画中画模式");
             }
         } catch (Throwable e) {
-            bootLog("[PiP] 进入画中画失败: " + rootCause(e));
+            pipSupported = false;
+            bootLog("[PiP] 进入画中画失败（已禁用）: " + rootCause(e));
         }
     }
 
@@ -1052,6 +1220,8 @@ public class MainActivity extends Activity {
         ivCar = findViewById(R.id.ivCar);
         carZone = findViewById(R.id.carZone);
         tagLines = findViewById(R.id.tagLines);
+        turnLeft = findViewById(R.id.turnLeft);
+        turnRight = findViewById(R.id.turnRight);
         // 页面单击切换日夜模式（高德导航广播也可自动切换）
         View root = findViewById(R.id.root);
         if (root != null) root.setOnClickListener(v -> toggleDayNight());
@@ -1322,7 +1492,11 @@ public class MainActivity extends Activity {
         else ui("CarInfoManager 不可用");
 
         if (hvacManager != null) readHvacCcm();
-        else ui("CarHvacManager 不可用（滤芯状态入参）");
+        else {
+            // 无 HVAC Manager 时也恢复温度记忆
+            restoreHvacTempFromSP();
+            ui("CarHvacManager 不可用（滤芯状态入参）");
+        }
 
         if (yfManager != null) readAarData();
         else ui("CarYFSettingManager 不可用（智能新风/滤芯/车窗）");
@@ -1456,7 +1630,7 @@ public class MainActivity extends Activity {
     private static final HashMap<Integer, String> SENSOR_GUESS = new HashMap<>();
     static {
         SENSOR_GUESS.put(5,  "可能:行驶方向?");
-        SENSOR_GUESS.put(9,  "可能:安全带?");
+        SENSOR_GUESS.put(9,  "未知9(全程=1,待验证)");
         SENSOR_GUESS.put(11, "挡位结合(0=P/31=行驶)");
         SENSOR_GUESS.put(52, "驻车驱动(待重验:拉手刹无变化)");
         SENSOR_GUESS.put(63, "非大灯(开关无反应)");
@@ -1508,6 +1682,8 @@ public class MainActivity extends Activity {
                 case SENSOR_DOOR_RR: evDoorRR = ev; break;
                 case SENSOR_TRUNK_IN: evTrunkIn = ev; break;
                 case SENSOR_DOOR_TRUNK_OUT: evTrunkOut = ev; break;
+                case SENSOR_TURN_LEFT: evTurnLeft = ev; break;
+                case SENSOR_TURN_RIGHT: evTurnRight = ev; break;
                 default: evOthers.put(type, ev); break;  // 未知/其余传感器
             }
         } catch (Throwable ignored) {}
@@ -1657,6 +1833,9 @@ public class MainActivity extends Activity {
                     bootLog("[HVAC] " + hvacPropName(propId) + " area=" + area + " → " + vs);
                 }
             }
+
+        // 3.5) 温度记忆：ECU 上电默认32℃不可信，用SP记忆值覆盖
+            restoreHvacTempFromSP();
         }
 
         // 4) CCM 功率保底读取（滤芯状态机入参 r，独立于枚举——枚举失败也必须读）
@@ -1929,20 +2108,68 @@ public class MainActivity extends Activity {
             if (!found) sb.append(";").append(tag);
             hvacProps.put(prop, sb.toString());
         }
-        // 推送计数节流：每属性只记前 3 次到日志
-        Integer cnt = hvacPushCount.get(prop);
-        int c = cnt == null ? 1 : cnt + 1;
-        hvacPushCount.put(prop, c);
-        if (c <= 3) bootLog("[HVAC] 推送 " + hvacPropName(prop) + " area=" + area + " → " + vs);
+        // 仅空调控制属性写文件日志：CCM功率(16387)、风量档(16388)、AC制冷(16393)、内循环(16395)、座椅通风(20481)
+        if (prop == 16387 || prop == 16388 || prop == 16393 || prop == 16395 || prop == 20481) {
+            hvacLog("[HVAC] 推送 " + hvacPropName(prop) + " area=" + area + " → " + vs);
+        }
 
         if (prop == 16387 && area == 8) {
             aarHvacCcm = v instanceof Integer ? (Integer) v : parseHvacInt(vs);
             computeAarState();
         }
+        // 温度推送：持久化真实值（非32℃默认值）
+        if (prop == 16385) {
+            try {
+                float tv = v instanceof Float ? (Float) v : Float.parseFloat(vs.replace("f", ""));
+                if (tv > 0 && tv < 31.5f) {
+                    uiPrefs().edit().putString(KEY_HVAC_TEMP, vs).apply();
+                }
+            } catch (Throwable ignored) {}
+        }
         refreshDisplay();
         } catch (Throwable e) {
             bootLog("[HVAC] 推送解析失败: " + rootCause(e));
         }
+    }
+
+    /** 从 SP 恢复上次 HVAC 温度：ECU 上电默认32℃，真实值要等推送，先用记忆值 */
+    private void restoreHvacTempFromSP() {
+        try {
+            String saved = uiPrefs().getString(KEY_HVAC_TEMP, null);
+            if (saved == null) return;
+            // 解析格式 area1=22.0f;area4=22.0f 或 area1=22.0;area4=22.0
+            StringBuilder sb = new StringBuilder();
+            for (String tag : saved.split(";")) {
+                int eq = tag.indexOf('=');
+                if (eq <= 0) continue;
+                String areaStr = tag.substring(0, eq);
+                String val = tag.substring(eq + 1);
+                // 取当前 hvacProps 里该 area 的 ECU 读数
+                float ecuVal = -1f;
+                String cur = hvacProps.get(16385);
+                if (cur != null) {
+                    for (String part : cur.split(";")) {
+                        if (part.startsWith(areaStr + "=")) {
+                            try { ecuVal = Float.parseFloat(part.substring(part.indexOf('=') + 1).replace("f", "")); } catch (Throwable ignored2) {}
+                            break;
+                        }
+                    }
+                }
+                // ECU 读到 32℃（上电默认）时用记忆值覆盖
+                float memVal = Float.parseFloat(val.replace("f", ""));
+                if (ecuVal >= 31.5f || cur == null) {
+                    if (sb.length() > 0) sb.append(";");
+                    sb.append(areaStr).append("=").append(val);
+                } else {
+                    if (sb.length() > 0) sb.append(";");
+                    sb.append(areaStr).append("=").append(ecuVal).append("f");
+                }
+            }
+            if (sb.length() > 0) {
+                hvacProps.put(16385, sb.toString());
+                hvacLog("[HVAC] 温度记忆恢复: " + sb.toString() + "（ECU上电默认32℃已覆盖）");
+            }
+        } catch (Throwable ignored) {}
     }
 
     /** 读 AAR 全套属性 + 注册 YF 回调（照抄 dn.a(CarYFSettingManager)） */
@@ -2378,6 +2605,18 @@ public class MainActivity extends Activity {
         logToFile(text, false);
     }
 
+    /** 把文本中的单位部分缩小到 50%（如 "81%" → 数值正常 + "%" 缩小，
+     *  "23.0℃" → 数值正常 + "℃" 缩小），返回 SpannableString */
+    private SpannableString setUnitSmall(String fullText, String unit) {
+        SpannableString span = new SpannableString(fullText);
+        int idx = fullText.indexOf(unit);
+        if (idx >= 0) {
+            span.setSpan(new RelativeSizeSpan(0.5f), idx, idx + unit.length(),
+                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return span;
+    }
+
     /** V2 仪表盘逐控件刷新（仅主线程调用） */
     private void updateDashboard() {
         float odometer = getFloat(evOdometer);
@@ -2400,11 +2639,15 @@ public class MainActivity extends Activity {
             tvOdo.setText(String.format("%.0f", odometer));
         }
         if (tvOdoUnit != null) tvOdoUnit.setText(mileageUnit);
-        tvOil.setText(evOilLife == null ? "--" : oilLife + "%");
-        tvFuel.setText(evFuelPct == null ? "--" : String.format("%.0f%%", Math.max(fuelPct, 0)));
+        tvOil.setText(evOilLife == null ? "--" : setUnitSmall(oilLife + "%", "%"));
+        tvFuel.setText(evFuelPct == null ? "--" : setUnitSmall(String.format("%.0f%%", Math.max(fuelPct, 0)), "%"));
 
         // ---- 速度 ----
         tvSpeed.setText(evSpeed == null ? "--" : String.format("%.0f", Math.max(speed, 0)));
+
+        // ---- 转向灯 ----
+        if (turnLeft != null) turnLeft.update(getInt(evTurnLeft), true);
+        if (turnRight != null) turnRight.update(getInt(evTurnRight), false);
 
         // ---- 四轮胎压（圆形标签：值+单位，呼吸边框） ----
         updateTireCircle(tagLFTire, tireData.get(1));
@@ -2424,10 +2667,10 @@ public class MainActivity extends Activity {
         // 温度双区：area1=主驾 area4=副驾（16385）
         String tempDriver = hvacAreaValue(16385, "area1");
         String tempPassenger = hvacAreaValue(16385, "area4");
-        tvTempDriver.setText(tempDriver == null ? "--" : tempDriver + "℃");
-        tvTempPassenger.setText(tempPassenger == null ? tempDriver == null ? "--" : tempDriver + "℃"
-                : tempPassenger + "℃");   // 单区车机：副驾跟主驾
-        tvPm.setText(aarPmNow >= 0 ? aarPmNow + " μg/m³" : "--");
+        tvTempDriver.setText(tempDriver == null ? "--" : setUnitSmall(tempDriver + "℃", "℃"));
+        tvTempPassenger.setText(tempPassenger == null ? tempDriver == null ? "--" : setUnitSmall(tempDriver + "℃", "℃")
+                : setUnitSmall(tempPassenger + "℃", "℃"));   // 单区车机：副驾跟主驾
+        tvPm.setText(aarPmNow >= 0 ? setUnitSmall(aarPmNow + " μg/m³", " μg/m³") : "--");
         tvPm.setTextColor(pmColor(aarPmNow));
 
 
@@ -2773,41 +3016,33 @@ public class MainActivity extends Activity {
 
     // ========== 日志文件 ==========
 
-    /** 过程日志：写 boot.log，失败自动轮转新文件（兼容卸载重装 UID 变化）；首次失败上报 UI */
+    /** 过程日志：仅输出 Logcat，不再写文件（按用户要求精简日志） */
     private static volatile String writeFailReason;
 
     private static void bootLog(String msg) {
         Log.d(TAG, msg);
+    }
+
+    /** UI 日志：仅输出 Logcat，不再写文件 */
+    private void ui(String text) {
+        Log.d(TAG, text);
+    }
+
+    /** 车况数据快照：不再写文件（按用户要求精简日志） */
+    private void logToFile(String text, boolean force) {
+        // 不再写 carinfo.log
+    }
+
+    /** 崩溃日志：写文件保留 */
+    private static void crashLog(String msg) {
+        Log.e(TAG, msg);
         writeAppend(BOOT_LOG, msg);
     }
 
-    /** UI 日志：写 boot.log（屏上不再显示滚动日志） */
-    private void ui(String text) {
-        Log.d(TAG, text);
-        logBuilder.append(text).append("\n");
-        writeAppend(BOOT_LOG, "[UI] " + text);
-    }
-
-    /** 车况数据快照：写 carinfo.log（force=true 用于 onDestroy 最终快照），5秒节流 */
-    private void logToFile(String text, boolean force) {
-        if (!force) {
-            long now = System.currentTimeMillis();
-            if (now - lastFileWrite < 5000) return;
-            lastFileWrite = now;
-        }
-        try {
-            File dir = new File(Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS), "CarProbe");
-            if (!dir.exists()) dir.mkdirs();
-            String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(new Date());
-            boolean ok = writeAppendRaw(new File(dir, "carinfo.log"), ts, text);
-            if (!ok) {
-                String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA).format(new Date());
-                writeAppendRaw(new File(dir, "carinfo_" + stamp + ".log"), ts, text);
-            }
-        } catch (Throwable e) {
-            Log.e(TAG, "logToFile fail", e);
-        }
+    /** HVAC 关键操作日志：写文件保留（仅空调控制属性） */
+    private static void hvacLog(String msg) {
+        Log.d(TAG, msg);
+        writeAppend(BOOT_LOG, msg);
     }
 
     /** 追加写一行；失败时（EACCES 等）轮转到带时间戳的新文件 */
@@ -2845,7 +3080,6 @@ public class MainActivity extends Activity {
 
     private void setStatus(String text) {
         Log.d(TAG, "[状态] " + text);
-        writeAppend(BOOT_LOG, "[状态] " + text);
     }
 
     private static class TireData {
