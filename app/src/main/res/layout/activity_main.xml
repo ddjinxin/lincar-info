@@ -239,6 +239,12 @@ android:layout_marginStart="4dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
 
+        <!-- 空调状态提示（车图底部居中） -->
+        <com.jingxin.lincarinfo.HvacToastView
+            android:id="@+id/hvacToast"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
         <!-- 红点+虚线标注层（车图上层、标签下层） -->
         <com.jingxin.lincarinfo.TagLineOverlay
             android:id="@+id/tagLines"

@@ -24,9 +24,9 @@ import android.view.animation.LinearInterpolator;
  */
 public class DoorCircleView extends View {
 
-    /** 圆形直径 dp：竖屏横屏统一 100dp，由 circleScale + 宽度约束缩放 */
-    private static final float DIAMETER_DP_PORTRAIT = 100f;
-    private static final float DIAMETER_DP_LANDSCAPE = 100f;
+    /** 圆形直径 dp：竖屏横屏统一 90dp，由 circleScale + 宽度约束缩放 */
+    private static final float DIAMETER_DP_PORTRAIT = 90f;
+    private static final float DIAMETER_DP_LANDSCAPE = 90f;
 
     private static final float BREATH_MAX = 1.5f;
     private static final long PERIOD_NORMAL = 2200L;
