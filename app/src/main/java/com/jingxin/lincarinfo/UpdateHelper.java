@@ -1,0 +1,493 @@
+package com.jingxin.lincarinfo;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.HashSet;
+import java.util.Set;
+
+/**
+ * 应用更新检查器（纯 Gitee 版）
+ *
+ * 流程：
+ * 1. checkOnLaunch(activity) 异步调 Gitee API 拿最新 Release
+ * 2. 版本相同/获取失败 → 静默
+ * 3. 版本不同且未被永久忽略 → 后台下载 APK
+ * 4. 下载成功 → 弹窗提示安装；失败 → 静默（启动场景）
+ * 5. 用户点"稍后" → 该版本加入忽略集合，永久不再提示
+ */
+public class UpdateHelper {
+
+    private static final String TAG = "UpdateHelper";
+
+    // Gitee 仓库
+    private static final String GITEE_OWNER = "dandingjx";
+    private static final String GITEE_NAME  = "lincar-info";
+    private static final String GITEE_API_URL =
+            "https://gitee.com/api/v5/repos/" + GITEE_OWNER + "/" + GITEE_NAME + "/releases/latest";
+
+    // APK 缓存路径（应用专属目录，不需要特殊权限）
+    private static final String UPDATE_FILE_NAME = "update.apk";
+    private File updateFile;
+    private File getUpdateFile() {
+        if (updateFile == null) {
+            File dir = appContext.getExternalFilesDir(null);
+            if (dir == null) dir = appContext.getCacheDir();
+            updateFile = new File(dir, UPDATE_FILE_NAME);
+        }
+        return updateFile;
+    }
+
+    // 永久忽略版本集合存储
+    private static final String SP_NAME       = "update_prefs";
+    private static final String KEY_IGNORED   = "ignored_versions";
+
+    private static UpdateHelper instance;
+    private final Context appContext;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean isChecking = false;
+    // 进程级标记：本次进程已检查过，避免同一次启动重复检查。进程重启后自动重置。
+    private boolean launchChecked = false;
+
+    private UpdateHelper(Context context) {
+        appContext = context.getApplicationContext();
+    }
+
+    public static synchronized UpdateHelper getInstance(Context context) {
+        if (instance == null) {
+            instance = new UpdateHelper(context);
+        }
+        return instance;
+    }
+
+    // ==================== 对外接口 ====================
+
+    /**
+     * 启动时自动检查（遵守"永久忽略"列表，本次启动只检查一次）。
+     */
+    public void checkOnLaunch(Activity activity) {
+        if (launchChecked) {
+            return;
+        }
+        launchChecked = true;
+        checkAndDownload(activity, false);
+    }
+
+    /**
+     * 核心流程：检查 → 下载 → 弹窗
+     * @param force true 表示手动检查，忽略忽略列表
+     */
+    private void checkAndDownload(final Activity activity, final boolean force) {
+        if (isChecking) {
+            return;
+        }
+        isChecking = true;
+
+        new Thread(() -> {
+            try {
+                // 1. 拿当前版本号
+                String currentVer = getCurrentVersionName();
+                if (currentVer == null) {
+                    Log.e(TAG, "无法获取当前版本号");
+                    finishCheck(activity, force, null);
+                    return;
+                }
+                Log.i(TAG, "当前版本: " + currentVer + "，开始检查 Gitee 最新版本");
+
+                // 2. 调 Gitee API
+                ReleaseInfo info = fetchLatestRelease();
+                if (info == null) {
+                    Log.w(TAG, "无法获取最新版本信息（网络问题）");
+                    finishCheck(activity, force, null);
+                    return;
+                }
+                // 版本对比
+                String latestVer = normalizeVersion(info.tagName);
+                String currentNorm = normalizeVersion(currentVer);
+                Log.i(TAG, "最新版本: " + info.tagName + " (规范化: " + latestVer + ")");
+
+                if (compareVersions(currentNorm, latestVer) >= 0) {
+                    Log.i(TAG, "已是最新版本");
+                    finishCheck(activity, force, null);
+                    return;
+                }
+
+                // 4. 检查永久忽略列表（force 模式跳过）
+                if (!force && isVersionIgnored(info.tagName)) {
+                    Log.i(TAG, "用户已忽略版本 " + info.tagName + "，不再提示");
+                    finishCheck(activity, force, null);
+                    return;
+                }
+
+                // 5. 后台静默下载
+                Log.i(TAG, "开始后台下载 APK: " + info.downloadUrl);
+                boolean ok = downloadApk(info.downloadUrl);
+                if (!ok) {
+                    Log.e(TAG, "下载失败");
+                    finishCheck(activity, force, null);
+                    return;
+                }
+
+                // 6. 下载成功 → 主线程弹窗
+                Log.i(TAG, "下载完成，提示用户安装");
+                mainHandler.post(() -> showInstallDialog(activity, info, force));
+
+            } catch (Exception e) {
+                Log.e(TAG, "检查更新异常: " + e.getMessage(), e);
+                finishCheck(activity, force, null);
+            }
+        }).start();
+    }
+
+    // ==================== 内部实现 ====================
+
+    private String getCurrentVersionName() {
+        try {
+            return appContext.getPackageManager()
+                    .getPackageInfo(appContext.getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return null;
+        }
+    }
+
+    /** 从 Gitee API 获取最新 Release 信息 */
+    private ReleaseInfo fetchLatestRelease() {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(GITEE_API_URL);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "LinCarInfo-Updater");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                Log.w(TAG, "Gitee API 响应码: " + code);
+                return null;
+            }
+            String body = readStream(conn.getInputStream());
+            return parseReleaseJson(body);
+        } catch (Exception e) {
+            Log.e(TAG, "fetchLatestRelease 失败: " + e.getMessage());
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** 简单 JSON 解析（不引入第三方库，手写提取需要的字段） */
+    private ReleaseInfo parseReleaseJson(String json) {
+        try {
+            String tagName   = extractString(json, "tag_name");
+            String body      = extractString(json, "body");
+            String downloadUrl = extractFirstAssetUrl(json);
+            if (tagName == null || downloadUrl == null) return null;
+            ReleaseInfo info = new ReleaseInfo();
+            info.tagName   = tagName;
+            info.notes     = (body != null) ? body : "";
+            info.downloadUrl = downloadUrl;
+            return info;
+        } catch (Exception e) {
+            Log.e(TAG, "parseReleaseJson 失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 从 JSON 中提取字符串字段（简易实现，处理转义字符） */
+    private String extractString(String json, String key) {
+        String pattern = "\"" + key + "\"";
+        int idx = json.indexOf(pattern);
+        if (idx < 0) return null;
+        idx = json.indexOf(":", idx);
+        if (idx < 0) return null;
+        idx++;
+        while (idx < json.length() && Character.isWhitespace(json.charAt(idx))) idx++;
+        if (idx >= json.length() || json.charAt(idx) != '"') return null;
+        idx++;
+        StringBuilder sb = new StringBuilder();
+        while (idx < json.length()) {
+            char c = json.charAt(idx);
+            if (c == '\\' && idx + 1 < json.length()) {
+                char next = json.charAt(idx + 1);
+                switch (next) {
+                    case 'n': sb.append('\n'); break;
+                    case 't': sb.append('\t'); break;
+                    case 'r': sb.append('\r'); break;
+                    case '"': sb.append('"'); break;
+                    case '\\': sb.append('\\'); break;
+                    case '/': sb.append('/'); break;
+                    default: sb.append(next); break;
+                }
+                idx += 2;
+            } else if (c == '"') {
+                break;
+            } else {
+                sb.append(c);
+                idx++;
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 从 JSON 中提取第一个 asset 的 browser_download_url */
+    private String extractFirstAssetUrl(String json) {
+        String key = "browser_download_url";
+        int idx = json.indexOf(key);
+        if (idx < 0) return null;
+        idx = json.indexOf("\"", json.indexOf(":", idx));
+        if (idx < 0) return null;
+        idx++;
+        int end = json.indexOf("\"", idx);
+        if (end < 0) return null;
+        return json.substring(idx, end);
+    }
+
+    /** 下载 APK（Gitee 直链，国内快） */
+    private boolean downloadApk(String downloadUrl) {
+        // 先清理旧 APK
+        File oldFile = getUpdateFile();
+        if (oldFile.exists()) oldFile.delete();
+
+        File dir = oldFile.getParentFile();
+        if (dir != null && !dir.exists() && !dir.mkdirs()) {
+            Log.e(TAG, "创建下载目录失败: " + dir.getAbsolutePath());
+            return false;
+        }
+
+        if (downloadUrl.contains("gitee.com")) {
+            Log.i(TAG, "从 Gitee 直链下载: " + downloadUrl);
+            return tryDownload(downloadUrl, getUpdateFile().getAbsolutePath(), 30000);
+        }
+        // 非 Gitee 直链（理论不会出现），也直接尝试下载
+        return tryDownload(downloadUrl, getUpdateFile().getAbsolutePath(), 30000);
+    }
+
+    private boolean tryDownload(String urlStr, String destPath, int timeoutMs) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "LinCarInfo-Updater");
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setInstanceFollowRedirects(true);
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                Log.w(TAG, "下载响应码: " + code + " url=" + urlStr);
+                return false;
+            }
+            // 校验1：Content-Type 拒绝 HTML
+            String contentType = conn.getContentType();
+            if (contentType != null && contentType.toLowerCase().contains("text/html")) {
+                Log.w(TAG, "返回内容是 HTML，非 APK（错误页）: " + urlStr);
+                return false;
+            }
+            int total = conn.getContentLength();
+            InputStream is = conn.getInputStream();
+            FileOutputStream fos = new FileOutputStream(destPath);
+            byte[] buf = new byte[8192];
+            int n;
+            long downloaded = 0;
+            while ((n = is.read(buf)) > 0) {
+                fos.write(buf, 0, n);
+                downloaded += n;
+            }
+            fos.flush();
+            fos.close();
+            is.close();
+            // 校验2：下载完整性
+            if (total > 0 && downloaded != total) {
+                Log.e(TAG, "下载不完整: " + downloaded + "/" + total + " bytes, url=" + urlStr);
+                new File(destPath).delete();
+                return false;
+            }
+            // 校验3：APK 魔数（PK\x03\x04）
+            if (!isApkFile(destPath)) {
+                Log.e(TAG, "下载文件不是有效 APK（魔数校验失败）: " + destPath + " url=" + urlStr);
+                new File(destPath).delete();
+                return false;
+            }
+            Log.i(TAG, "下载完成: " + destPath + " (" + downloaded + " bytes)");
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "下载失败: " + urlStr + " - " + e.getMessage());
+            return false;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /**
+     * 校验 APK 魔数：ZIP 文件前4字节是 0x50 0x4B 0x03 0x04 (PK\x03\x04)。
+     */
+    private boolean isApkFile(String path) {
+        FileInputStream fis = null;
+        try {
+            fis = new FileInputStream(path);
+            byte[] header = new byte[4];
+            int read = fis.read(header);
+            if (read < 4) return false;
+            return header[0] == 0x50 && header[1] == 0x4B
+                && header[2] == 0x03 && header[3] == 0x04;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (fis != null) {
+                try { fis.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /** 弹窗提示安装 */
+    private void showInstallDialog(Activity activity, ReleaseInfo info, boolean force) {
+        if (activity == null || activity.isFinishing()) return;
+
+        StringBuilder msg = new StringBuilder();
+        msg.append("发现新版本: ").append(info.tagName).append("\n\n");
+        if (info.notes != null && !info.notes.isEmpty()) {
+            String notes = info.notes.length() > 500
+                    ? info.notes.substring(0, 500) + "..." : info.notes;
+            msg.append("更新内容:\n").append(notes).append("\n\n");
+        }
+        msg.append("已下载完成，是否立即安装?");
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(activity);
+        builder.setTitle("应用更新");
+        builder.setMessage(msg.toString());
+        builder.setCancelable(false);
+        builder.setPositiveButton("立即安装", (DialogInterface d, int w) -> {
+            installApk(activity);
+        });
+        builder.setNegativeButton("稍后", (DialogInterface d, int w) -> {
+            if (!force) {
+                addIgnoredVersion(info.tagName);
+                Log.i(TAG, "用户忽略版本: " + info.tagName);
+            }
+        });
+        builder.show();
+    }
+
+    /** 调起系统安装器 */
+    private void installApk(Activity activity) {
+        try {
+            File apkFile = getUpdateFile();
+            if (!apkFile.exists()) {
+                Toast.makeText(activity, "APK 文件不存在", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            intent.addCategory(Intent.CATEGORY_DEFAULT);
+
+            Uri uri;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                uri = Uri.parse("content://" + activity.getPackageName() + ".fileprovider/update.apk");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                uri = Uri.fromFile(apkFile);
+            }
+            intent.setDataAndType(uri, "application/vnd.android.package-archive");
+            activity.startActivity(intent);
+        } catch (Exception e) {
+            Log.e(TAG, "调起安装失败: " + e.getMessage(), e);
+            Toast.makeText(activity, "调起安装失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ==================== 永久忽略列表 ====================
+
+    private boolean isVersionIgnored(String version) {
+        Set<String> set = appContext.getSharedPreferences(SP_NAME, Context.MODE_PRIVATE)
+                .getStringSet(KEY_IGNORED, new HashSet<>());
+        return set.contains(version);
+    }
+
+    private void addIgnoredVersion(String version) {
+        SharedPreferences sp = appContext.getSharedPreferences(SP_NAME, Context.MODE_PRIVATE);
+        Set<String> set = new HashSet<>(sp.getStringSet(KEY_IGNORED, new HashSet<>()));
+        set.add(version);
+        sp.edit().putStringSet(KEY_IGNORED, set).apply();
+    }
+
+    // ==================== 辅助 ====================
+
+    /** 规范化版本号：去掉 "v" 前缀，去空白 */
+    private String normalizeVersion(String v) {
+        if (v == null) return "";
+        v = v.trim();
+        if (v.toLowerCase().startsWith("v")) v = v.substring(1);
+        return v;
+    }
+
+    /**
+     * 语义化版本对比（支持 1.0 == 1.0.0）。
+     * @return v1 < v2 返回 -1；相等返回 0；v1 > v2 返回 1
+     */
+    private int compareVersions(String v1, String v2) {
+        if (v1 == null) v1 = "";
+        if (v2 == null) v2 = "";
+        String[] a = v1.split("\\.");
+        String[] b = v2.split("\\.");
+        int len = Math.max(a.length, b.length);
+        for (int i = 0; i < len; i++) {
+            int ai = (i < a.length && !a[i].isEmpty()) ? parseIntSafe(a[i]) : 0;
+            int bi = (i < b.length && !b[i].isEmpty()) ? parseIntSafe(b[i]) : 0;
+            if (ai != bi) return ai > bi ? 1 : -1;
+        }
+        return 0;
+    }
+
+    /** 解析整数，非数字部分取 0 */
+    private int parseIntSafe(String s) {
+        try {
+            int end = 0;
+            while (end < s.length() && Character.isDigit(s.charAt(end))) end++;
+            if (end == 0) return 0;
+            return Integer.parseInt(s.substring(0, end));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** 检查流程结束统一出口 */
+    private void finishCheck(Activity activity, boolean force, String msg) {
+        isChecking = false;
+        if (force && msg != null) {
+            mainHandler.post(() -> Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show());
+        }
+    }
+
+    private String readStream(InputStream is) throws Exception {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) > 0) baos.write(buf, 0, n);
+        return new String(baos.toByteArray(), "UTF-8");
+    }
+
+    // ==================== 数据结构 ====================
+
+    private static class ReleaseInfo {
+        String tagName;
+        String notes;
+        String downloadUrl;
+    }
+}

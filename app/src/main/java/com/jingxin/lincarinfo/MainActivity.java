@@ -459,6 +459,9 @@ public class MainActivity extends Activity {
         // 一次性探测车机 Car API 支持情况
         probeCarApiClasses();
 
+        // 在线更新检查（Gitee，启动时自动检查，仅一次，模拟器/车机均执行）
+        UpdateHelper.getInstance(this).checkOnLaunch(this);
+
         if (!isCarApiAvailable()) {
             bootLog("[onCreate] 此设备无 android.car.Car 类 — 模拟器模式：填模拟数据展示界面");
             loadMockData();
@@ -887,7 +890,9 @@ public class MainActivity extends Activity {
             float maxArrow = 60f * getResources().getDisplayMetrics().density * 1.25f * 0.8f;
             arrowSize = Math.min(arrowSize, maxArrow);
             int sizePx = Math.round(arrowSize);
-            float speedCenterY = gap + availH / 2f;
+            // 转向灯箭头视觉顶部与速度文字顶部对齐：
+            // 箭头在 view 内垂直居中且只占 70% 高度，view 顶部需上移 sizePx*0.15
+            float speedTopY = gap;
             // 速度 TextView 宽度（测量后）
             tvSpeed.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
             int speedW = tvSpeed.getMeasuredWidth();
@@ -899,7 +904,7 @@ public class MainActivity extends Activity {
             lpL.width = sizePx;
             lpL.height = sizePx;
             lpL.leftMargin = Math.round(speedCenterX - offset - sizePx);
-            lpL.topMargin = Math.round(speedCenterY - sizePx / 2f);
+            lpL.topMargin = Math.round(speedTopY - sizePx * 0.15f);
             turnLeft.setLayoutParams(lpL);
             // 右转向灯
             android.widget.FrameLayout.LayoutParams lpR =
@@ -907,7 +912,7 @@ public class MainActivity extends Activity {
             lpR.width = sizePx;
             lpR.height = sizePx;
             lpR.leftMargin = Math.round(speedCenterX + offset);
-            lpR.topMargin = Math.round(speedCenterY - sizePx / 2f);
+            lpR.topMargin = Math.round(speedTopY - sizePx * 0.15f);
             turnRight.setLayoutParams(lpR);
             turnLeft.bringToFront();
             turnRight.bringToFront();

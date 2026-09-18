@@ -23,6 +23,9 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <!-- 车机 21:49 实测：HVAC Manager 获取报 SecurityException，CarLauncher 同样声明 -->
     <uses-permission android:name="android.car.permission.CAR_HVAC" />
+    <!-- 在线更新：网络访问 + 安装 APK -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application android:sharedUserId="android.uid.system"
         android:allowBackup="false"
@@ -43,5 +46,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 在线更新：向系统安装器暴露下载的 APK -->
+        <provider
+            android:name=".SimpleFileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
