@@ -62,11 +62,21 @@ public class TireCircleView extends View {
     private final Paint breathPaint = new Paint(Paint.ANTI_ALIAS_FLAG);   // 呼吸扩散环
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);      // 胎压值
     private final Paint unitPaint = new Paint(Paint.ANTI_ALIAS_FLAG);      // 单位
+    /** 内侧微光晕 Paint 复用：颜色变化时才重建 Shader，避免每帧 new Paint+RadialGradient */
+    private final Paint innerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private String pressure = "--";
     private String unit = "kPa";
     private int color = 0xFF00FF9D;
     private boolean alert = false;
+    /** fitTextSize 缓存：文本或 View 尺寸未变时直接用上次结果，避免每帧 measureText */
+    private String cachedFitText = null;
+    private float cachedFitSize = 0f;
+    private int cachedFitWidth = 0;
+    /** fitTextSize 结果缓存：文本/圆尺寸未变时不重算，避免每帧 measureText */
+    private float cachedValSize = 0f;
+    private String cachedValText = null;
+    private int cachedViewPx = 0;
     /** 发光阴影开关：夜间开（LED感）/白天关（高对比实色），构造时缓存 */
     private final boolean glow;
     private ValueAnimator breathAnim;
@@ -112,6 +122,7 @@ public class TireCircleView extends View {
         this.alert = alert;
         ringPaint.setColor(color);
         breathPaint.setColor(color);
+        innerGlowPaint.setShader(null);   // 颜色变 → 下帧重建光晕渐变
         if (changed) {
             restartBreath();
             restartShake();
@@ -247,17 +258,18 @@ public class TireCircleView extends View {
         ringPaint.setColor((Math.round(ringAlpha * 255f) << 24) | base);
         canvas.drawCircle(cx, cy, r, ringPaint);
 
-        // ---- 内侧微光晕（中心向边的径向渐变，增强 LED 感） ----
-        Paint innerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        innerGlow.setShader(new RadialGradient(cx, cy, r,
-                (color & 0x00FFFFFF) | 0x1A000000, 0x00000000, Shader.TileMode.CLAMP));
-        canvas.drawCircle(cx, cy, r, innerGlow);
+        // ---- 内侧微光晕（中心向边的径向渐变，增强 LED 感）Paint/Shader 复用 ----
+        if (innerGlowPaint.getShader() == null) {
+            innerGlowPaint.setShader(new RadialGradient(cx, cy, r,
+                    (color & 0x00FFFFFF) | 0x1A000000, 0x00000000, Shader.TileMode.CLAMP));
+        }
+        canvas.drawCircle(cx, cy, r, innerGlowPaint);
 
         // ---- 3. 文字：胎压值（上）+ 单位（下），垂直居中 ----
         float maxTextW = r * 2f * 0.78f;                    // 圆内可用文字宽（弦长≈78%）
         // 胎压值字号上限按圆直径比例：50dp→15dp, 70dp→21dp，保持视觉占比一致
         float maxValPx = (Math.min(w, h) / d) * 0.30f * d;
-        float valSize = fitTextSize(textPaint, pressure, maxTextW, maxValPx);
+        float valSize = cachedFitTextSize(textPaint, pressure, maxTextW, maxValPx);
         float unitSize = valSize * 0.40f;
         textPaint.setTextSize(valSize);
         textPaint.setColor(color);
@@ -294,14 +306,20 @@ public class TireCircleView extends View {
         canvas.drawText(unit, cx, unitBaseline, unitPaint);
     }
 
-    /** 计算让文本恰好不折行的最大字号：从 maxPx 起，按实测宽逐步缩 */
-    private float fitTextSize(Paint p, String text, float maxWidth, float maxPx) {
+    /** 计算让文本恰好不折行的最大字号：从 maxPx 起，按实测宽逐步缩；结果缓存（文本/尺寸未变不重算） */
+    private float cachedFitTextSize(Paint p, String text, float maxWidth, float maxPx) {
+        if (text != null && text.equals(cachedFitText) && cachedFitWidth == (int) maxWidth && cachedFitSize > 0f) {
+            return cachedFitSize;
+        }
         float size = maxPx;
         p.setTextSize(size);
         while (p.measureText(text) > maxWidth && size > 4f) {
             size *= 0.92f;
             p.setTextSize(size);
         }
+        cachedFitText = text;
+        cachedFitWidth = (int) maxWidth;
+        cachedFitSize = size;
         return size;
     }
 }

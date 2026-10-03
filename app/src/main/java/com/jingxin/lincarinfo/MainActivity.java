@@ -1579,7 +1579,7 @@ public class MainActivity extends Activity {
             // 延迟重试：首次读取可能 TPMS 未就绪，5 秒后检查是否四轮都有数据，没有则重读
             handler.postDelayed(() -> {
                 if (tireData.size() < TIRE_AREAS.length) {
-                    bootLog("[胎压] 首次读取不完整（" + tireData.size() + "/4），5秒后重试");
+                    tireLog("[胎压] 首次读取不完整（" + tireData.size() + "/4），5秒后重试");
                     readTireData();
                 }
             }, 5000L);
@@ -1851,6 +1851,9 @@ public class MainActivity extends Activity {
                         if ("onChangeEvent".equals(m) && args != null && args.length > 0) {
                             handleVendorEvent(args[0]);
                         }
+                        if ("onErrorEvent".equals(m) && args != null && args.length >= 2) {
+                            tireLog("[胎压] VendorExtension onErrorEvent propId=" + args[0] + " areaId=" + args[1] + "（订阅异常）");
+                        }
                         Class<?> rt = method.getReturnType();
                         if (rt == boolean.class) return Boolean.FALSE;
                         if (rt == int.class) return 0;
@@ -1861,13 +1864,14 @@ public class MainActivity extends Activity {
                     });
             Method register = vendorManager.getClass().getMethod("registerCallback", cbClass);
             register.invoke(vendorManager, vendorCallback);
-            bootLog("[胎压] VendorExtension 回调注册OK");
+            tireLog("[胎压] VendorExtension 回调注册OK");
         } catch (Throwable e) {
             bootLog("[胎压] VendorExtension 回调注册失败: " + rootCause(e));
         }
     }
 
-    /** VendorExtension 属性变化回调：胎压状态/压力值变化时重读四轮（照抄 ek.java + eh.a(CarPropertyValue)） */
+    /** VendorExtension 属性变化回调：胎压状态/压力值变化时重读四轮（照抄 ek.java + eh.a(CarPropertyValue)）
+     *  所有到达的 propId 都写文件留痕（区分"推送根本没来"vs"推送来了但处理没成"） */
     private void handleVendorEvent(Object carPropertyValue) {
         try {
             // 提取 propertyId
@@ -1875,24 +1879,32 @@ public class MainActivity extends Activity {
             int propId = (Integer) getPropId.invoke(carPropertyValue);
             // 只关心胎压相关属性（ek.java: 0x27400412 状态 / 0x27600410 压力）
             if (propId == PROP_TIRE_STATE || propId == PROP_TIRE_PRESSURE) {
-                bootLog("[胎压] 收到推送 propId=0x" + Integer.toHexString(propId) + "，重读四轮");
+                tireLog("[胎压] 收到推送 propId=0x" + Integer.toHexString(propId) + "，重读四轮");
                 handler.post(() -> readTireData());
+            } else if (propId == PROP_MILEAGE_UNIT) {
+                // ek.java：里程单位推送，0=km 1=mi，动态更新续航/总里程单位
+                Object v = carPropertyValue.getClass().getMethod("getValue").invoke(carPropertyValue);
+                mileageUnit = Integer.valueOf(1).equals(v) ? "mi" : "km";
+                tireLog("[胎压] 里程单位推送 propId=557843475 → " + mileageUnit);
+                refreshDisplay();
+            } else {
+                tireLog("[胎压] 其他推送 propId=" + propId + "（0x" + Integer.toHexString(propId) + "），忽略");
             }
         } catch (Throwable e) {
-            bootLog("[胎压] VendorExtension 回调处理失败: " + rootCause(e));
+            tireLog("[胎压] VendorExtension 回调处理失败: " + rootCause(e));
         }
     }
 
     private void readTireData() {
-        bootLog("[胎压] ==== 读取胎压（VendorExtension）====");
+        tireLog("[胎压] ==== 读取胎压（VendorExtension）====");
         ui("读取胎压中...");
         Method getProperty;
         try {
             getProperty = vendorManager.getClass()
                     .getMethod("getProperty", Class.class, int.class, int.class);
-            bootLog("[胎压] getProperty 方法获取OK");
+            tireLog("[胎压] getProperty 方法获取OK");
         } catch (Throwable e) {
-            bootLog("[胎压] getProperty 方法不存在:\n" + stackTrace(e));
+            tireLog("[胎压] getProperty 方法不存在:\n" + stackTrace(e));
             ui("胎压 API 不可用");
             return;
         }
@@ -1904,22 +1916,26 @@ public class MainActivity extends Activity {
                 float pressure = (Float) getProperty.invoke(vendorManager, Float.class, PROP_TIRE_PRESSURE, area);
                 float temp = (Float) getProperty.invoke(vendorManager, Float.class, PROP_TIRE_TEMP, area);
                 tireData.put(area, new TireData(state, pressure, temp));
-                bootLog("[胎压] " + labels[i] + " state=" + state + " pressure=" + pressure + " temp=" + temp);
+                tireLog("[胎压] " + labels[i] + " state=" + state + " pressure=" + pressure + " temp=" + temp);
                 ui("胎压 " + labels[i] + " " + pressure + "kPa");
             } catch (Throwable e) {
-                bootLog("[胎压] " + labels[i] + " 读取失败: " + rootCause(e));
+                tireLog("[胎压] " + labels[i] + " 读取失败: " + rootCause(e));
                 ui("胎压 " + labels[i] + " 失败");
             }
         }
         // 里程单位（照抄 CarLauncher ej.java）：0=km 1=mi，用于总里程/续航显示
         try {
             Object unit = getProperty.invoke(vendorManager, Integer.class, PROP_MILEAGE_UNIT, 0);
-            bootLog("[车况] 里程单位(557843475)=" + unit);
+            tireLog("[车况] 里程单位(557843475)=" + unit);
             mileageUnit = Integer.valueOf(1).equals(unit) ? "mi" : "km";
             ui("里程单位: " + mileageUnit);
         } catch (Throwable e) {
-            bootLog("[车况] 里程单位读取失败: " + rootCause(e));
+            tireLog("[车况] 里程单位读取失败: " + rootCause(e));
         }
+        // 修 BUG：推送触发的重读只更新了 tireData 缓存，从没调 refreshDisplay()，
+        // 屏幕轮胎圈永远停在首屏值——这就是"胎压只更新一次"的直接原因（启动首屏靠 onCarServiceReady 末尾那次刷新）
+        tireLog("[胎压] 刷新 UI（四轮=" + tireData.size() + "/4）");
+        refreshDisplay();
         // 胎压单位请求改在 readAarData() 中完成（服务名 vendor_yfsetting，dw.java:104）
     }
 
@@ -2028,6 +2044,10 @@ public class MainActivity extends Activity {
             Method register = hvacManager.getClass().getMethod("registerCallback", cbClass);
             register.invoke(hvacManager, hvacCallback);
             bootLog("[HVAC] 回调注册OK");
+            // 基线用启动读到的当前值填上：第一次按键就能弹动画（之前要按两次）
+            initHvacToastBaseline();
+            bootLog("[HVAC] 提示基线已初始化 CCM=" + lastCcm + " 风量=" + lastFanLevel
+                    + " AC=" + lastAc + " 内循环=" + lastRecycle);
         } catch (Throwable e) {
             bootLog("[HVAC] 回调注册失败: " + rootCause(e));
         }
@@ -2290,6 +2310,52 @@ public class MainActivity extends Activity {
     private Integer lastFanLevel = null; // 16388 上次值
     private Integer lastAc = null;       // 16393 上次值
     private Integer lastRecycle = null;  // 16395 上次值
+
+    /** 用启动读到的 HVAC 缓存初始化提示基线：
+     *  否则第一次按键推送被当"首次"吞掉不弹动画（基线为 null），
+     *  第二次才有基线可比才弹——这就是"要按两次才显示"的根因。
+     *  缓存没有该 area 时直接读 ECU 兜底（CCM 保底同款）并回填缓存：
+     *  枚举读取"首个区域成功即整体替换、其余丢给推送补齐"，
+     *  16395 等属性 area8 常常不在缓存里，纯查缓存基线会拿到 null */
+    private void initHvacToastBaseline() {
+        lastCcm = baselineFromCacheOrEcu(16387, 8);
+        lastFanLevel = baselineFromCacheOrEcu(16388, 0);
+        if (lastFanLevel == null) lastFanLevel = baselineFromCacheOrEcu(16388, 8);
+        lastAc = baselineFromCacheOrEcu(16393, 8);
+        lastRecycle = baselineFromCacheOrEcu(16395, 8);
+    }
+
+    /** 先查 hvacProps 缓存，无此 area 则 getIntProperty 直读并回填缓存 */
+    private Integer baselineFromCacheOrEcu(int propId, int area) {
+        Integer v = hvacAreaInt(propId, area);
+        if (v != null) return v;
+        try {
+            Method getInt = hvacManager.getClass().getMethod("getIntProperty", int.class, int.class);
+            Object r = getInt.invoke(hvacManager, propId, area);
+            if (r instanceof Integer) {
+                int val = (Integer) r;
+                String tag = "area" + area + "=" + val;
+                String old = hvacProps.get(propId);
+                hvacProps.put(propId, old == null ? tag : old + ";" + tag);
+                return val;
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /** 从 hvacProps 缓存取 prop 的指定 area 当前值（无此 area 返回 null） */
+    private Integer hvacAreaInt(int propId, int wantArea) {
+        String s = hvacProps.get(propId);
+        if (s == null) return null;
+        for (String part : s.split(";")) {
+            String p = part.trim();
+            if (p.startsWith("area" + wantArea + "=")) {
+                try { return Integer.parseInt(p.substring(p.indexOf('=') + 1).replace("f", "")); }
+                catch (NumberFormatException e) { return null; }
+            }
+        }
+        return null;
+    }
 
     private void showHvacToastIfNeeded(int prop, int area, String vs) {
         if (hvacToast == null) return;
@@ -2900,14 +2966,28 @@ public class MainActivity extends Activity {
         } else {
             color = TireCircleView.colorOk(this); alert = false;         // 正常绿
         }
-        v.update(pressureNum(td.pressure), tireUnit, color, alert);
+        // 两行显示：第一行大数值，第二行小单位；单位未知时第二行显示 "--"
+        v.update(pressureNum(td.pressure),
+                tireUnit.isEmpty() ? "--" : tireUnit, color, alert);
     }
 
-    /** 胎压数值（不带单位）：pressureStr 的拆分版，圆形里单位独立一行 */
+    /** 胎压数值（不带单位）：按已知单位换算成纯数值字符串；单位未知时显示原始值 */
     private String pressureNum(float raw) {
-        String s = pressureStr(raw);
-        int cut = s.lastIndexOf(tireUnit);
-        return cut > 0 ? s.substring(0, cut) : s;   // 未知单位双显时整体作数值
+        if (raw >= 65533f) return "--";           // 65533/65534/65535 厂商无效值
+        if ("bar".equals(tireUnit)) {
+            float f = raw;
+            if (f % 5.0f == 0.0f) f += 1.0f;       // pc.a: bar 模式下 5 的倍数加 1（厂商魔法）
+            return String.format("%.2f", f * 0.01f);
+        }
+        if ("psi".equals(tireUnit)) return String.format("%.0f", raw * 0.14504f);
+        if ("kPa".equals(tireUnit)) {
+            int v = (int) raw;
+            int f2 = v % 10;
+            if (f2 <= 2) return String.valueOf(v / 10 * 10);          // 四舍五入到十位（pc.a）
+            if (f2 >= 8) return String.valueOf((v / 10 + 1) * 10);
+            return String.valueOf(v / 10 * 10 + 5);
+        }
+        return String.valueOf((int) raw);   // 单位未知：先按原始值显示，推送到达后自动换算
     }
 
     /** 门窗圆形标签刷新：传入门窗状态，DoorCircleView 内部决定显示/隐藏和动画。
@@ -3169,26 +3249,8 @@ public class MainActivity extends Activity {
     /** 胎压显示：照抄 CarLauncher pc.a(unit, value) — 65533~65535 厂商无效值显示"--"；
      *  单位已知则按单位换算（bar×0.01 / psi×0.14504 / kPa 十位取整），未知则原始值+kPa 换算双显 */
     private String pressureStr(float raw) {
-        if (raw >= 65533f) return "--";           // 65533/65534/65535 厂商无效值
-        if ("bar".equals(tireUnit)) {
-            float f = raw;
-            if (f % 5.0f == 0.0f) f += 1.0f;       // pc.a: bar 模式下 5 的倍数加 1（厂商魔法）
-            return String.format("%.2f%s", f * 0.01f, tireUnit);
-        }
-        if ("psi".equals(tireUnit)) {
-            return String.format("%.0f%s", raw * 0.14504f, tireUnit);
-        }
-        if ("kPa".equals(tireUnit)) {
-            int v = (int) raw;
-            int f2 = v % 10;
-            int shown;
-            if (f2 <= 2) shown = v / 10 * 10;             // 四舍五入到十位（pc.a）
-            else if (f2 >= 8) shown = (v / 10 + 1) * 10;
-            else shown = (v / 10 * 10 + 5);
-            return shown + tireUnit;
-        }
-        // 单位未知：原始值（0.01bar≈kPa）+bar 双显，等胎压单位推送后自动切换
-        return String.format("%.0fkPa(%.2fbar)", raw, raw * 0.01f);
+        String unit = tireUnit.isEmpty() ? "--" : tireUnit;
+        return pressureNum(raw) + unit;   // 与圆形两行显示同源：数值+单位拼接版
     }
 
     /** 胎温显示：CarLauncher 不显示温度且厂商未提供换算，仅原始值留档（≥65533 为无效值） */
@@ -3238,6 +3300,12 @@ public class MainActivity extends Activity {
     /** 崩溃日志：写文件保留 */
     private static void crashLog(String msg) {
         Log.e(TAG, msg);
+        writeAppend(BOOT_LOG, msg);
+    }
+
+    /** 胎压日志：写文件保留（推送/重读/刷新链路全程留痕，区分"推送没来"vs"读了没刷屏"） */
+    private static void tireLog(String msg) {
+        Log.d(TAG, msg);
         writeAppend(BOOT_LOG, msg);
     }
 

@@ -4,6 +4,7 @@ import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
@@ -24,6 +25,9 @@ public class FlowLineView extends View {
     private float progress = 0f; // 0→1 循环
     private int flowColor;
     private boolean glow;
+    /** 渐变复用：固定以“中心点为原点”建 shader，每帧只改 Matrix 平移（不 new） */
+    private LinearGradient flowGradient;
+    private final Matrix flowMatrix = new Matrix();
 
     public FlowLineView(Context context) {
         this(context, null);
@@ -86,14 +90,16 @@ public class FlowLineView extends View {
         float right = cx + expand;
         if (right - left < 1f) return;
 
-        // 渐变：两端透明→中心亮
-        int transparent = flowColor & 0x00FFFFFF;
-        LinearGradient gradient = new LinearGradient(
-                left, cy, right, cy,
-                new int[]{transparent, flowColor, transparent},
-                new float[]{0f, 0.5f, 1f},
-                Shader.TileMode.CLAMP);
-        glowPaint.setShader(gradient);
+        // 渐变：两端透明→中心亮（固定以中心为原点建 shader，尺寸/颜色变化时才重建）
+        if (flowGradient == null || glowPaint.getShader() == null) {
+            int transparent = flowColor & 0x00FFFFFF;
+            flowGradient = new LinearGradient(
+                    -halfMax, cy, halfMax, cy,
+                    new int[]{transparent, flowColor, transparent},
+                    new float[]{0f, 0.5f, 1f},
+                    Shader.TileMode.CLAMP);
+            glowPaint.setShader(flowGradient);
+        }
         glowPaint.setStrokeWidth(h > 4 ? 3f : 2f);
 
         if (glow) {
@@ -102,8 +108,10 @@ public class FlowLineView extends View {
             glowPaint.setShadowLayer(0, 0, 0, 0);
         }
 
+        // 每帧只平移 Matrix 到当前亮段位置，不重建渐变
+        flowMatrix.reset();
+        flowMatrix.setTranslate(cx, 0);
+        flowGradient.setLocalMatrix(flowMatrix);
         canvas.drawLine(left, cy, right, cy, glowPaint);
-        glowPaint.setShader(null);
-        glowPaint.setShadowLayer(0, 0, 0, 0);
     }
 }

@@ -45,6 +45,8 @@ public class DoorCircleView extends View {
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint breathPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** 内侧微光晕 Paint 复用：颜色变化时才重建 Shader，避免每帧 new Paint+RadialGradient */
+    private final Paint innerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     /** 显示模式 */
     private static final int MODE_HIDDEN = 0;      // 正常，不绘制
@@ -57,6 +59,10 @@ public class DoorCircleView extends View {
     private String textB = "窗开";   // 交替模式第二文本
     private String staticText = "";  // 静态模式文本
     private int color = 0xFFFF5A5A;  // 异常红
+    /** fitTextSize 缓存：文本或 View 尺寸未变时直接用上次结果 */
+    private String cachedFitText = null;
+    private float cachedFitSize = 0f;
+    private int cachedFitWidth = 0;
     /** 发光阴影开关：夜间开/白天关，构造时缓存 */
     private final boolean glow;
 
@@ -229,11 +235,12 @@ public class DoorCircleView extends View {
         ringPaint.setColor((Math.round(ringAlpha * 255f) << 24) | base);
         canvas.drawCircle(cx, cy, r, ringPaint);
 
-        // ---- 3. 内侧微光晕 ----
-        Paint innerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        innerGlow.setShader(new RadialGradient(cx, cy, r,
-                (color & 0x00FFFFFF) | 0x1A000000, 0x00000000, Shader.TileMode.CLAMP));
-        canvas.drawCircle(cx, cy, r, innerGlow);
+        // ---- 3. 内侧微光晕（Paint/Shader 复用） ----
+        if (innerGlowPaint.getShader() == null) {
+            innerGlowPaint.setShader(new RadialGradient(cx, cy, r,
+                    (color & 0x00FFFFFF) | 0x1A000000, 0x00000000, Shader.TileMode.CLAMP));
+        }
+        canvas.drawCircle(cx, cy, r, innerGlowPaint);
 
         // ---- 4. 文字渐隐渐显 ----
         // alpha 曲线：0→1→0（正弦上半波），phase 0=透明 0.5=最亮 1=透明
@@ -249,7 +256,7 @@ public class DoorCircleView extends View {
 
         float maxTextW = r * 2f * 0.78f;
         float maxValPx = (Math.min(w, h) / d) * 0.26f * d;
-        float textSize = fitTextSize(textPaint, display, maxTextW, maxValPx);
+        float textSize = cachedFitTextSize(textPaint, display, maxTextW, maxValPx);
         textPaint.setTextSize(textSize);
         int cFull = (textAlphaInt << 24) | (color & 0xFFFFFF);
         textPaint.setColor(cFull);
@@ -263,13 +270,20 @@ public class DoorCircleView extends View {
         canvas.drawText(display, cx, valBaseline, textPaint);
     }
 
-    private float fitTextSize(Paint p, String text, float maxWidth, float maxPx) {
+    /** 计算让文本恰好不折行的最大字号：结果缓存（文本/尺寸未变不重算） */
+    private float cachedFitTextSize(Paint p, String text, float maxWidth, float maxPx) {
+        if (text != null && text.equals(cachedFitText) && cachedFitWidth == (int) maxWidth && cachedFitSize > 0f) {
+            return cachedFitSize;
+        }
         float size = maxPx;
         p.setTextSize(size);
         while (p.measureText(text) > maxWidth && size > 4f) {
             size *= 0.92f;
             p.setTextSize(size);
         }
+        cachedFitText = text;
+        cachedFitWidth = (int) maxWidth;
+        cachedFitSize = size;
         return size;
     }
 }
