@@ -14,6 +14,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.SpannableString;
 import android.text.style.RelativeSizeSpan;
 import android.util.DisplayMetrics;
@@ -274,6 +275,7 @@ public class MainActivity extends Activity {
     private static final String KEY_DAY_MODE = "day_mode";   // 0=夜间 1=白天（默认夜间）
     private static final String KEY_AMAP_TRIGGERED = "amap_triggered"; // 高德是否触发过
     private static final String KEY_HVAC_TEMP = "hvac_temp";     // 上次HVAC真实温度（防ECU上电默认32℃）
+    static final String KEY_AUTO_START = "auto_start";           // 开机自启开关（长按主界面切换）
     static final int MODE_NIGHT = 0;
     static final int MODE_DAY = 1;
     private int uiModePref = MODE_NIGHT;
@@ -343,6 +345,15 @@ public class MainActivity extends Activity {
         safeRecreate();
     }
 
+    /** 页面长按切换：开机自启 开 ↔ 关（BootReceiver 读取同一 SP 键） */
+    private void toggleAutoStart() {
+        boolean next = !uiPrefs().getBoolean(KEY_AUTO_START, false);
+        uiPrefs().edit().putBoolean(KEY_AUTO_START, next).apply();
+        bootLog("[UI] 开机自启切换: " + (next ? "开" : "关"));
+        android.widget.Toast.makeText(this,
+                "开机自启：" + (next ? "开" : "关"), android.widget.Toast.LENGTH_SHORT).show();
+    }
+
     /** 注册高德导航日夜模式广播 */
     private void registerAmapThemeReceiver() {
         amapThemeReceiver = new BroadcastReceiver() {
@@ -403,6 +414,50 @@ public class MainActivity extends Activity {
         if (amapThemeReceiver != null) {
             try { unregisterReceiver(amapThemeReceiver); } catch (Throwable ignored) {}
             amapThemeReceiver = null;
+        }
+        if (vehicleQueryReceiver != null) {
+            try { unregisterReceiver(vehicleQueryReceiver); } catch (Throwable ignored) {}
+            vehicleQueryReceiver = null;
+        }
+    }
+
+    // ==================== 车况查询接收（乐酷驾驶数据桥，拉模式补推模式空窗） ====================
+
+    /** 广播 action：乐酷驾驶启动/翻页时定向查询，收到后回发当前快照 */
+    public static final String ACTION_VEHICLE_DATA_QUERY = "com.jingxin.lincarinfo.VEHICLE_DATA_QUERY";
+    private BroadcastReceiver vehicleQueryReceiver;
+
+    /** 注册车况查询接收器：乐酷查询时立即 refreshDisplay 回发当前快照
+     *  （指纹比对会让内容不变时不广播，故查询前清指纹强制发送） */
+    private void registerVehicleQueryReceiver() {
+        vehicleQueryReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!ACTION_VEHICLE_DATA_QUERY.equals(intent.getAction())) return;
+                bootLog("[数据桥] 收到乐酷查询 → 回发当前快照");
+                // 清指纹+节流窗口，强制本次 refreshDisplay 必发广播
+                // （否则内容与上次相同时指纹比对拦截，乐酷拿不到数据）
+                lastVehicleBcFingerprint = "";
+                lastVehicleBcTime = 0L;
+                runOnUiThread(() -> {
+                    try { refreshDisplay(); } catch (Throwable e) {
+                        bootLog("[数据桥] 查询回发失败: " + rootCause(e));
+                    }
+                });
+            }
+        };
+        IntentFilter filter = new IntentFilter(ACTION_VEHICLE_DATA_QUERY);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                Method m = Context.class.getMethod("registerReceiver",
+                        BroadcastReceiver.class, IntentFilter.class, int.class);
+                m.invoke(this, vehicleQueryReceiver, filter, Context.RECEIVER_EXPORTED);
+            } catch (Throwable e) {
+                Log.w(TAG, "反射注册查询广播失败，回退2参数: " + e);
+                registerReceiver(vehicleQueryReceiver, filter);
+            }
+        } else {
+            registerReceiver(vehicleQueryReceiver, filter);
         }
     }
 
@@ -1300,11 +1355,19 @@ public class MainActivity extends Activity {
         turnLeft = findViewById(R.id.turnLeft);
         turnRight = findViewById(R.id.turnRight);
         hvacToast = findViewById(R.id.hvacToast);
-        // 页面单击切换日夜模式（高德导航广播也可自动切换）
+        // 页面单击切换日夜模式（高德导航广播也可自动切换）；长按切换开机自启
         View root = findViewById(R.id.root);
-        if (root != null) root.setOnClickListener(v -> toggleDayNight());
+        if (root != null) {
+            root.setOnClickListener(v -> toggleDayNight());
+            root.setOnLongClickListener(v -> {
+                toggleAutoStart();
+                return true;
+            });
+        }
         // 注册高德导航日夜模式广播（仅 onCreate 注册一次）
         registerAmapThemeReceiver();
+        // 注册乐酷驾驶车况查询接收器（同随高德接收器注册/注销）
+        registerVehicleQueryReceiver();
         safeLoadCarImage();
         applyFontScale();
         // 清除 XML 布局中写死的文字光晕（日夜均关闭 shadowColor/shadowRadius）
@@ -2343,15 +2406,42 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    /** 从 hvacProps 缓存取 prop 的指定 area 当前值（无此 area 返回 null） */
+    /** 从 hvacProps 缓存取 prop 的指定 area 当前值（无此 area 返回 null）。
+     *  温度类值可能是 "23.0" 带小数，parseInt 会失败，用 parseFloat 取整。 */
     private Integer hvacAreaInt(int propId, int wantArea) {
         String s = hvacProps.get(propId);
         if (s == null) return null;
         for (String part : s.split(";")) {
             String p = part.trim();
             if (p.startsWith("area" + wantArea + "=")) {
-                try { return Integer.parseInt(p.substring(p.indexOf('=') + 1).replace("f", "")); }
-                catch (NumberFormatException e) { return null; }
+                String val = p.substring(p.indexOf('=') + 1).replace("f", "");
+                try {
+                    return Integer.parseInt(val);
+                } catch (NumberFormatException e) {
+                    try {
+                        return (int) Float.parseFloat(val);
+                    } catch (NumberFormatException e2) {
+                        return null;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 从 hvacProps 缓存取 prop 的指定 area 当前 float 值（温度等带小数的数据用）。 */
+    private Float hvacAreaFloat(int propId, int wantArea) {
+        String s = hvacProps.get(propId);
+        if (s == null) return null;
+        for (String part : s.split(";")) {
+            String p = part.trim();
+            if (p.startsWith("area" + wantArea + "=")) {
+                String val = p.substring(p.indexOf('=') + 1).replace("f", "");
+                try {
+                    return Float.parseFloat(val);
+                } catch (NumberFormatException e) {
+                    return null;
+                }
             }
         }
         return null;
@@ -2871,6 +2961,112 @@ public class MainActivity extends Activity {
 
         // 数据快照写文件（5秒节流，避免高频回调刷爆磁盘）
         logToFile(text, false);
+
+        // 定向广播给乐酷驾驶（变化检测+节流，见 sendVehicleBroadcast）
+        sendVehicleBroadcast(odometer, speed, gear, range, fuelPct, fuelWarn, oilLife, ignition);
+    }
+
+    // ==================== 车况广播出口（乐酷驾驶数据桥） ====================
+
+    /** 广播 action：乐酷驾驶监听同一 action 接收 */
+    public static final String ACTION_VEHICLE_DATA = "com.jingxin.lincarinfo.VEHICLE_DATA";
+    /** 接收方包名（setPackage 定向投递，防第三方窃听车况） */
+    private static final String TARGET_PKG = "com.jingxin.pandrive";
+    /** 最小发送间隔 ms（车速高频推送，300ms 节流上限 1~3Hz） */
+    private static final long VEHICLE_BC_MIN_INTERVAL = 300L;
+    /** 上次广播时间戳 */
+    private long lastVehicleBcTime = 0L;
+    /** 上次广播快照指纹（内容不变不发） */
+    private String lastVehicleBcFingerprint = "";
+
+    /**
+     * 定向广播车况快照给乐酷驾驶。refreshDisplay 是所有数据回调的汇聚点，
+     * 此处统一出口；变化检测（指纹比对）+ 300ms 节流，静置无数据时不空中传播。
+     */
+    private void sendVehicleBroadcast(float odometer, float speed, int gear,
+                                      float range, float fuelPct, int fuelWarn,
+                                      int oilLife, int ignition) {
+        // ---- 0. 空数据哨兵：核心字段全是无效值时不发（onCreate 首次空 refreshDisplay
+        //      不占指纹基线与节流窗口，避免紧随其后的模拟数据/首条真实数据被节流丢弃） ----
+        if (speed < 0 && gear < 0 && odometer < 0 && range < 0) return;
+        long now = SystemClock.elapsedRealtime();
+        // ---- 1. 变化检测：拼全字段指纹，内容没变直接返回 ----
+        StringBuilder fp = new StringBuilder(128);
+        fp.append((int) (speed * 10)).append(',').append(gear).append(',')
+          .append((int) (odometer * 10)).append(',').append((int) (range * 10)).append(',')
+          .append((int) (fuelPct * 10)).append(',').append(fuelWarn).append(',')
+          .append(oilLife).append(',').append(ignition).append('|');
+        for (int area : TIRE_AREAS) {
+            TireData td = tireData.get(area);
+            fp.append(td == null ? "-" : (int) td.pressure + "/" + (int) td.temp + "/" + td.state).append(';');
+        }
+        fp.append(tireUnit).append('|');
+        for (HashMap.Entry<Integer, String> e : hvacProps.entrySet()) {
+            fp.append(e.getKey()).append('=').append(e.getValue()).append(';');
+        }
+        fp.append('|');
+        fp.append(getInt(evTurnLeft)).append(',').append(getInt(evTurnRight)).append('|');
+        fp.append(getInt(evDoorLB)).append(',').append(getInt(evDoorRB)).append(',')
+          .append(getInt(evDoorLR)).append(',').append(getInt(evDoorRR)).append(',')
+          .append(getInt(evTrunkIn)).append(',').append(getInt(evTrunkOut)).append('|');
+        fp.append(winDriver).append(',').append(winPassenger).append(',')
+          .append(winLeftRear).append(',').append(winRightRear).append('|');
+        fp.append(aarPmNow).append('|');
+        String fingerprint = fp.toString();
+        if (fingerprint.equals(lastVehicleBcFingerprint)) return;
+        // ---- 2. 节流：内容变了但距上次发送 <300ms，丢弃（等下次回调） ----
+        if (now - lastVehicleBcTime < VEHICLE_BC_MIN_INTERVAL) return;
+        lastVehicleBcTime = now;
+        lastVehicleBcFingerprint = fingerprint;
+
+        Intent intent = new Intent(ACTION_VEHICLE_DATA);
+        intent.setPackage(TARGET_PKG);
+        // ---- 横幅 ----
+        intent.putExtra("speed", speed);                       // km/h
+        intent.putExtra("gear", gear);                         // 0=P/1=N/2=R/3=D...
+        intent.putExtra("odometer", odometer);                 // km
+        intent.putExtra("range", range);                       // km
+        intent.putExtra("mileageUnit", mileageUnit);           // km / mi
+        intent.putExtra("fuelPct", fuelPct);                   // %
+        intent.putExtra("fuelWarn", fuelWarn);                 // 1=预警
+        intent.putExtra("oilLife", oilLife);                   // %
+        intent.putExtra("ignition", ignition);                  // 点火状态
+        // ---- 转向灯 ----
+        intent.putExtra("turnLeft", getInt(evTurnLeft));       // 3=亮/1=灭/0=关
+        intent.putExtra("turnRight", getInt(evTurnRight));
+        // ---- 胎压 ----
+        for (int i = 0; i < TIRE_AREAS.length; i++) {
+            TireData td = tireData.get(TIRE_AREAS[i]);
+            String p = "tire" + i;   // tire0=左前 tire1=右前 tire2=左后 tire3=右后
+            if (td != null) {
+                intent.putExtra(p + "Pressure", td.pressure);
+                intent.putExtra(p + "Temp", td.temp);
+                intent.putExtra(p + "State", td.state);
+            }
+        }
+        intent.putExtra("tireUnit", tireUnit);                 // psi/kPa/bar
+        // ---- 门窗后备箱 ----
+        intent.putExtra("doorLB", getInt(evDoorLB));           // 1=开
+        intent.putExtra("doorRB", getInt(evDoorRB));
+        intent.putExtra("doorLR", getInt(evDoorLR));
+        intent.putExtra("doorRR", getInt(evDoorRR));
+        intent.putExtra("trunkIn", getInt(evTrunkIn));
+        intent.putExtra("trunkOut", getInt(evTrunkOut));
+        // ---- 车窗 ----
+        intent.putExtra("winDriver", winDriver);               // 0=开 1=关
+        intent.putExtra("winPassenger", winPassenger);
+        intent.putExtra("winLeftRear", winLeftRear);
+        intent.putExtra("winRightRear", winRightRear);
+        // ---- 空调 ----
+        intent.putExtra("tempDriver", hvacAreaFloat(16385, 1));      // 主驾温度 ℃
+        intent.putExtra("tempPassenger", hvacAreaFloat(16385, 4));   // 副驾温度 ℃
+        intent.putExtra("acPower", hvacAreaInt(16387, 8));          // 1=开 2=关
+        intent.putExtra("fanLevel", hvacAreaInt(16388, 0));         // 风量档
+        intent.putExtra("acRecycle", hvacAreaInt(16395, 8));        // 内循环
+        intent.putExtra("acOn", hvacAreaInt(16393, 8));            // A/C 开关
+        // ---- 新风 PM2.5 ----
+        intent.putExtra("pm25", aarPmNow);                    // μg/m³
+        sendBroadcast(intent);
     }
 
     /** 把文本中的单位部分缩小到 50%（如 "81%" → 数值正常 + "%" 缩小，
@@ -2880,6 +3076,17 @@ public class MainActivity extends Activity {
         int idx = fullText.indexOf(unit);
         if (idx >= 0) {
             span.setSpan(new RelativeSizeSpan(0.5f), idx, idx + unit.length(),
+                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return span;
+    }
+
+    /** 把小数点及之后的小数部分缩小到 50%（如 "74595.0" → 整数正常 + ".0" 缩小） */
+    private SpannableString setDecimalSmall(String fullText) {
+        SpannableString span = new SpannableString(fullText);
+        int dotIdx = fullText.indexOf('.');
+        if (dotIdx >= 0) {
+            span.setSpan(new RelativeSizeSpan(0.5f), dotIdx, fullText.length(),
                     SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         return span;
