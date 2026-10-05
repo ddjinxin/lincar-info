@@ -7,14 +7,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
-import android.os.Bundle;
 import android.os.Build;
-import android.os.Environment;
+import android.os.Bundle;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.text.SpannableString;
 import android.text.style.RelativeSizeSpan;
 import android.util.DisplayMetrics;
@@ -26,160 +23,24 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Locale;
-import java.util.TreeMap;
 
 /**
- * 系统签名直读版探针 — 照抄 CarLauncher 的 CarService 调用方式读取全部车辆数据。
+ * 纯 UI 外壳 — 所有数据逻辑由 VehicleDataService 承载。
  *
- * 全反射实现：编译期依赖 android.car.jar（compileOnly），运行时通过反射调用。
- * 注意：R8 会把 Class.forName("常量") 优化为类字面量，运行时抛 NoClassDefFoundError，
- * 因此所有 catch 必须用 Throwable（不能只 catch Exception）。
+ * 绑定 Service 后通过 VehicleDataListener 回调刷新界面：
+ *  - onVehicleDataChanged：全量快照 → updateDashboard
+ *  - onHvacChanged：HVAC 推送 → showHvacToastIfNeeded
  *
- * V2 仪表盘 UI：深空黑底+青色发光仪表盘（档位/续航/里程/机油/燃油横幅、大车速、
- * 车俯视图+四轮胎压+门窗标签、空调卡片）。标签相对车图显示矩形按百分比定位，
- * 任意屏宽比例自适应；字号按屏宽dp等比缩放。无 Car API 时（模拟器）填模拟数据展示。
- *
- * 日志策略（一次上车全拿到）：
- *  - /sdcard/Download/CarProbe/boot.log — 全量过程日志（启动/连接/注册/数据/异常/崩溃）
- *  - /sdcard/Download/CarProbe/carinfo.log — 车况数据快照（5秒节流）
- *  - 崩溃时先写日志再转发系统处理器（避免 Activity 假死黑屏）
+ * Service 独立存活，Activity 退出后 Service 继续广播给乐酷驾驶。
  */
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements VehicleDataListener {
 
     private static final String TAG = "LinCarInfo";
-    private static final File BOOT_LOG = new File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "CarProbe/boot.log");
 
-    // Sensor types —— 语义按 CarLauncher ei.java/er.java/eo.java/ep.java/eq.java 反编译实锚
-    // 注意：车机是厂商定制小数字 ID，不是标准 PROPERTY_ID（大数字全部 invalid sensor type）
-    private static final int SENSOR_ODOMETER = 4;          // 总里程 float，无效值哨兵 1.6777215E7
-    private static final int SENSOR_SPEED = 2;            // 车速 float km/h
-    private static final int SENSOR_GEAR = 7;             // 挡位！（er.java: getGearData().gear，非油量）
-    private static final int SENSOR_IGNITION = 22;        // 点火状态 int（IGNITION_STATE_*）
-    private static final int SENSOR_FUEL_WARNING = 25;    // 油量预警开关 int（eq.java: ==1 则报警）
-    private static final int SENSOR_RANGE = 26;          // 续航里程 float km（eo.java: leftMile，非剩余油量%）
-    private static final int SENSOR_FUEL_PCT = 27;        // 油量百分比 float %（ep.java: car_oil_percent）
-    private static final int SENSOR_OIL_LIFE = 51;       // 机油寿命%（实锤：林肯之道APP显示75%完全吻合）
-    private static final int SENSOR_DOOR_LB = 56;
-    private static final int SENSOR_DOOR_RB = 57;
-    private static final int SENSOR_DOOR_LR = 58;
-    private static final int SENSOR_DOOR_RR = 59;
-    private static final int SENSOR_TRUNK_IN = 60;
-    private static final int SENSOR_DOOR_TRUNK_OUT = 61;
-    private static final int SENSOR_TURN_LEFT = 68;     // 左转向灯（3=亮/1=灭/0=关）
-    private static final int SENSOR_TURN_RIGHT = 69;    // 右转向灯（3=亮/1=灭/0=关）
-    // 标准大数字 PROPERTY_ID 传感器（挡位 289408000/手刹 287310850 等）已删——
-    // 19:58 车机实测全部 invalid sensor type，车机只认厂商小数字 ID
-
-    /** 传感器编号 → 名称（用于日志与显示） */
-    private static final HashMap<Integer, String> SENSOR_NAMES = new HashMap<>();
-    static {
-        SENSOR_NAMES.put(SENSOR_SPEED, "车速");
-        SENSOR_NAMES.put(SENSOR_ODOMETER, "总里程");
-        SENSOR_NAMES.put(SENSOR_GEAR, "挡位");
-        SENSOR_NAMES.put(SENSOR_IGNITION, "点火");
-        SENSOR_NAMES.put(SENSOR_FUEL_WARNING, "油量预警");
-        SENSOR_NAMES.put(SENSOR_RANGE, "续航");
-        SENSOR_NAMES.put(SENSOR_FUEL_PCT, "油量百分比");
-        SENSOR_NAMES.put(SENSOR_OIL_LIFE, "机油寿命");
-        SENSOR_NAMES.put(SENSOR_DOOR_LB, "左前门");
-        SENSOR_NAMES.put(SENSOR_DOOR_RB, "右前门");
-        SENSOR_NAMES.put(SENSOR_DOOR_LR, "左后门");
-        SENSOR_NAMES.put(SENSOR_DOOR_RR, "右后门");
-        SENSOR_NAMES.put(SENSOR_TRUNK_IN, "后备箱内");
-        SENSOR_NAMES.put(SENSOR_DOOR_TRUNK_OUT, "后备箱外");
-        SENSOR_NAMES.put(SENSOR_TURN_LEFT, "左转向灯");
-        SENSOR_NAMES.put(SENSOR_TURN_RIGHT, "右转向灯");
-        // 未知小数字 ID 保留原编号（车机 19:58 实测支持 5/9/11/49-52/62-72，待用户验证含义）
-    }
-
-    // VendorExtension property IDs
-    private static final int PROP_TIRE_STATE = 658506770;
-    private static final int PROP_TIRE_PRESSURE = 660603920;
-    private static final int PROP_TIRE_TEMP = 660603921;
-    private static final int PROP_MILEAGE_UNIT = 557843475;  // CarLauncher ej.java: 里程单位
-    private static final int PROP_CAR_IDENTIFY = 117440591;  // CarLauncher em.java: 车辆标识
-    private static final int[] TIRE_AREAS = {1, 2, 4, 8};
-
-    // CarInfoManager property IDs（照抄 CarLauncher eh.n()/m()）
-    private static final int INFO_CAR_TYPE = 117440513;   // carType 车型代码（bytes[0]+bytes[1] 为索引）
-    private static final int INFO_CAR_STYLE = 117440515;  // carStyle
-    private static final int INFO_CAR_PATTERN = 117440516; // carPattern/VsCode
-    private static final int INFO_CAR_COLOR = 117440517;  // carColor
-    private static final int INFO_FUEL_TYPE = 117440545;  // 燃油类型
-    private static final int INFO_AAR_CONFIG = 117440539; // AAR 配置
-
-    // 车型名称表（照抄 CarLauncher eh.h：索引 = bytes[0]+bytes[1]）
-    private static final String[] CAR_TYPE_NAMES = {
-            "Default", "CD539", "C519", "D568", "CD391", "CX482", "CX483", "U625", "U611", "U540"};
-
-    // Car 实例和 Manager（全反射，Object 持有）
-    private Object car;
-    private Object sensorManager;
-    private Object vendorManager;
-    private Object infoManager;
-    private Object yfManager;          // CarYFSettingManager（智能新风/滤芯/车窗/胎压单位）
-    private Object hvacManager;        // CarHvacManager（滤芯状态机入参 r + HVAC 全属性）
-    private Object sensorListener;
-    private Object vendorCallback;     // VendorExtension 属性推送回调（动态代理，监听胎压变化）
-    private Object yfCallback;         // YF 属性推送回调（动态代理）
-    private Object hvacCallback;       // HVAC 属性推送回调（动态代理）
-
-    // ========== HVAC 扩展（CarHvacManager 全属性枚举直读） ==========
-    // 车机 HVAC 是厂商小数字 ID。23:01 车机实测 + 用户操作确认（boot(10)/carinfo(7)）：
-    //   16385=设定温度（float℃，单区，area1/area4 同值双报，area128 后排无推送）
-    //   16388=风量档（1→2→3→4 递增，15=最大/除雾模式——按前窗最大加热键时系统自动设最大）
-    //   16392=风向模式（值序列 3→2→1→0→6→5→4 两轮切换，具体模式名无实锤不猜）
-    //   16393=A/C制冷开关（1=开 0=关，area8 前排）
-    //   16395=内循环开关（1=开 0=关，与 16391/16396/20487 联动）
-    //   16387=CCM功率（2=空调关闭 1=空调通电，滤芯状态机入参 r）
-    //   20481=座椅通风（area1=主驾 area2=副驾，0=关 1=开 2=初始态）
-    //   20487=进气模式（与内循环联动：1=内循环 2=外循环）
-    //   20513=出风强度（随风量同步变化，疑似鼓风机功率/RPM，全局区 16777216）
-    //   未实锚：16391/16394/16396/16397/16398/20489（与内循环/A/C 联动的开关类，待单独操作确认）
-    /** HVAC 属性 ID → 名称（已实锤语义的才有名称，其余显示 propId 原值） */
-    private static final HashMap<Integer, String> HVAC_PROP_NAMES = new HashMap<>();
-    static {
-        HVAC_PROP_NAMES.put(4, "温度单位(4)");
-        HVAC_PROP_NAMES.put(16385, "设定温度℃(16385)");
-        HVAC_PROP_NAMES.put(16387, "CCM功率(16387)");
-        HVAC_PROP_NAMES.put(16388, "风量档(16388)");
-        HVAC_PROP_NAMES.put(16392, "风向模式(16392)");
-        HVAC_PROP_NAMES.put(16393, "A/C制冷(16393)");
-        HVAC_PROP_NAMES.put(16395, "内循环(16395)");
-        HVAC_PROP_NAMES.put(20481, "座椅通风(20481)");
-        HVAC_PROP_NAMES.put(20487, "进气模式(20487)");
-        HVAC_PROP_NAMES.put(20513, "出风强度(20513)");
-    }
-    /** 枚举到的 HVAC 属性：key=propId，value="区域列表|读到的值" */
-    private final TreeMap<Integer, String> hvacProps = new TreeMap<>();
-    /** 里程单位：0=km 1=mi（照抄 CarLauncher eh.w，由 PROP_MILEAGE_UNIT 读出） */
-    private String mileageUnit = "km";
-
-    // 连接重试控制（照抄 CarLauncher 的 CarConnectionController）
-    private volatile boolean serviceConnected;
-    private int tryConnectCount;
-    private Handler carHandler;          // 车机连接回调 Handler（后台线程）
-    private static final int MSG_TRY_CONNECT = 1000;
-    private static final int MSG_CHECK_CONNECTED = 1001;
-    private static final int MSG_DISCONNECTED = 1002;
-
-    // ========== 仪表盘 UI 控件（V2） ==========
-    // 旧版 tvStatus/tvTireInfo/tvLog 文本界面已废弃：ui()/setStatus() 降级为仅写日志，
-    // 数据快照由 buildDataSnapshot() 构造文本写 carinfo.log。
-    private static final float DESIGN_HEIGHT_DP = 640f;   // 竖屏基准高度 dp（车机 584x1057 → ~640dp 高）
+    // ========== UI 控件 ==========
+    private static final float DESIGN_HEIGHT_DP = 640f;
 
     private TextView tvGear, tvRange, tvOdo, tvOil, tvFuel, tvSpeed;
     private TextView tvRangeUnit, tvOdoUnit;
@@ -193,106 +54,244 @@ public class MainActivity extends Activity {
     private ImageView ivCar;
     private View carZone;
     private TagLineOverlay tagLines;
-    /** 是否已连上车机数据（模拟器无 Car API 时用模拟数据展示界面） */
-    private boolean hasRealData;
 
-    // ========== 智能新风/AAR（CarYFSettingManager，服务名 vendor_yfsetting） ==========
-    // 属性 ID 照抄 CarLauncher dn.java（AARDataController），全部只读（getGlobalProperty），
-    // 788/789 是车机 set 下发的，不写
-    private static final int YF_PM_NOW        = 289419786; // ID_PMCABN_D 车内 PM 浓度 μg/m³
-    private static final int YF_PM_DIAG       = 289419787; // ID_PMSNSCABN_D_STAT 传感器诊断状态
-    private static final int YF_SENSOR_MISS   = 289419790; // ID_PMSNSCABN_D 传感器缺失(1=缺Can)
-    private static final int YF_CCM_POWER     = 289419791; // CCM 功率按钮（滤芯状态机入参 q）
-    private static final int[] YF_PM_HISTORY = {
-            289419776, 289419777, 289419778, 289419779, 289419780,
-            289419781, 289419782, 289419783, 289419784, 289419785}; // PM 历史（2~20点，0起）
-    // 四车窗状态（dn.java a(CarYFSettingManager)：v=198 司机窗 w=200 副驾窗 x=199 左后 y=201 右后）
-    private static final int YF_WIN_DRIVER  = 289437198;
-    private static final int YF_WIN_PASSENGER = 289437200;
-    private static final int YF_WIN_LEFT_REAR  = 289437199;
-    private static final int YF_WIN_RIGHT_REAR = 289437201;
-    // 胎压单位请求（fk.java/fm.java：写 292565248 触发推送，byte[] 回调前2字节=2312 标识）
-    private static final int YF_TIRE_UNIT_REQ = 292565248;
+    // ========== 当前数据快照（Service 回调更新） ==========
+    private VehicleData currentData;
+    private int[] tireAreas = {1, 2, 4, 8};
 
-    /** AAR 最新缓存（dn.java 字段 q/r/s/t/u 照搬） */
-    private int aarPowerBtn = -1;    // q: YF_CCM_POWER
-    private int aarHvacCcm  = -1;   // r: HVAC getIntProperty(16387,8)，滤芯判定入参
-    private int aarSensorMiss = -1; // s: YF_SENSOR_MISS
-    private int aarPmNow     = -1;  // t: YF_PM_NOW
-    private int aarPmDiag    = -1;  // u: YF_PM_DIAG
-    private int[] aarPmHistory = new int[10]; // PM 历史（下标 0~9 对应 2~20 点钟）
-    private int winDriver = -1, winPassenger = -1, winLeftRear = -1, winRightRear = -1;
-    private int aarState = 0;      // o: 滤芯状态 1=开启 2=关闭 3=完成 4=异常
-    private String tireUnit = "";   // 胎压单位（"psi"/"kPa"/"bar"），空=未取到
+    // ========== HVAC Toast 基线（变化检测弹动画） ==========
+    private Integer lastCcm = null;
+    private Integer lastFanLevel = null;
+    private Integer lastAc = null;
+    private Integer lastRecycle = null;
 
-    /** 车机 UI 转义文本（照抄 dn.h()） */
-    private static String aarStateStr(int s) {
-        switch (s) {
-            case 1: return "过滤开启";
-            case 2: return "过滤关闭";
-            case 3: return "过滤完成";
-            case 4: return "异常(滤芯需更换)";
-            default: return "未知(" + s + ")";
-        }
-    }
-
-    /** 窗开关文本：0=开 1=关（dn.f(): 四窗全 1 才算完整工作） */
-    private static String winStr(int v) {
-        if (v < 0) return "N/A";
-        return v == 1 ? "关" : "开";
-    }
+    // ========== Service 绑定 ==========
+    private VehicleDataService dataService;
+    private boolean serviceBound = false;
+    private ServiceConnection serviceConnection;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    // 缓存最新传感器事件
-    private Object evOdometer, evSpeed, evGear, evRange, evFuelPct, evFuelWarn, evIgnition, evOilLife;
-    private Object evDoorLB, evDoorRB, evDoorLR, evDoorRR, evTrunkIn, evTrunkOut;
-    private Object evTurnLeft, evTurnRight;
-    /** 其余传感器（手刹/RPM等）最新事件，key=sensorType */
-    private final HashMap<Integer, Object> evOthers = new HashMap<>();
-    private final HashMap<Integer, TireData> tireData = new HashMap<>();
-    /** 首次收到某 sensor 数据时记录一次完整内容 */
-    private final HashSet<Integer> firstDataLogged = new HashSet<>();
-
-    /** 需要记录值变化的传感器类型（仅待验证参数，已验证的不记） */
-    private static final HashSet<Integer> MONITORED_TYPES = new HashSet<>();
-    static {
-        MONITORED_TYPES.add(11);                   // 11 挡位结合状态(0=P/31=行驶)【待验证：挂挡】
-        MONITORED_TYPES.add(52);                   // 52 驻车/驱动状态【待重验：拉手刹无变化】
-        MONITORED_TYPES.add(67);                   // 67 电源档位(12=ON/0=OFF)【已实锤】
-        MONITORED_TYPES.add(68);                   // 68 左转向灯【已实锤，高频闪烁日志量大但短暂】
-        MONITORED_TYPES.add(69);                   // 69 右转向灯【已实锤】
-        MONITORED_TYPES.add(72);                   // 72 点火电源位(1=ON/0=LOCK)【已实锤】
-    }
-    /** 监控参数上次值（用于变化检测，key=sensorType） */
-    private final HashMap<Integer, String> lastSensorValue = new HashMap<>();
-    /** 已注册的传感器集合（动态枚举，车机只认厂商小数字 ID） */
-    private final HashSet<Integer> registeredSensors = new HashSet<>();
-    /** carinfo.log 节流 */
-
-    // ========== 日夜模式（两态：白天 / 夜间，页面单击切换 + 高德导航广播自动切换） ==========
-    /** SP 文件名与键 */
+    // ========== 日夜模式 ==========
     private static final String PREF_UI = "ui";
-    private static final String KEY_DAY_MODE = "day_mode";   // 0=夜间 1=白天（默认夜间）
-    private static final String KEY_AMAP_TRIGGERED = "amap_triggered"; // 高德是否触发过
-    private static final String KEY_HVAC_TEMP = "hvac_temp";     // 上次HVAC真实温度（防ECU上电默认32℃）
-    static final String KEY_AUTO_START = "auto_start";           // 开机自启开关（长按主界面切换）
+    private static final String KEY_DAY_MODE = "day_mode";
+    private static final String KEY_AMAP_TRIGGERED = "amap_triggered";
+    static final String KEY_AUTO_START = "auto_start";
     static final int MODE_NIGHT = 0;
     static final int MODE_DAY = 1;
     private int uiModePref = MODE_NIGHT;
+    private long lastAmapThemeTime = 0;
+    private BroadcastReceiver amapThemeReceiver;
+    // 模式切换接收（乐酷驾驶发 SET_MODE 广播，mode=1 时 Activity 自动退出）
+    private BroadcastReceiver modeReceiver;
 
     // 高德导航日夜模式广播
     private static final String ACTION_AUTONAVI = "AUTONAVI_STANDARD_BROADCAST_SEND";
     private static final int KEY_TYPE_DAY_NIGHT = 10019;
     private static final int EXTRA_STATE_DAY = 37;
     private static final int EXTRA_STATE_NIGHT = 38;
-    private long lastAmapThemeTime = 0;
-    private BroadcastReceiver amapThemeReceiver;
 
     private android.content.SharedPreferences uiPrefs() {
         return getSharedPreferences(PREF_UI, MODE_PRIVATE);
     }
 
-    /** 读取 SP 偏好并在 Resources 上强制应用 uiMode 覆盖（每次 attachBaseContext 调用） */
+    // ========== Service 绑定 ==========
+
+    private void bindDataService() {
+        serviceConnection = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder service) {
+                VehicleDataService.LocalBinder binder = (VehicleDataService.LocalBinder) service;
+                dataService = binder.getService();
+                serviceBound = true;
+                dataService.registerListener(MainActivity.this);
+            }
+
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                dataService = null;
+                serviceBound = false;
+            }
+        };
+        Intent intent = new Intent(this, VehicleDataService.class);
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+        // 同时 startService 确保 Service 独立存活（Activity 退出后不销毁）；
+        // API 26+ 用 startForegroundService，Service 内部 startForeground 保活
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+    }
+
+    // ========== VehicleDataListener 回调 ==========
+
+    @Override
+    public void onVehicleDataChanged(VehicleData data) {
+        this.currentData = data;
+        // 初始化 HVAC Toast 基线（首次拿到数据时）
+        if (lastCcm == null && data.acPower >= 0) {
+            lastCcm = data.acPower;
+            lastFanLevel = data.fanLevel;
+            lastAc = data.acOn;
+            lastRecycle = data.acRecycle;
+        }
+        runOnUiThread(() -> {
+            try { updateDashboard(); } catch (Throwable e) { Log.w(TAG, "[UI] updateDashboard 失败: " + e); }
+        });
+    }
+
+    @Override
+    public void onHvacChanged(int propId, int areaId, String value) {
+        runOnUiThread(() -> showHvacToastIfNeeded(propId, areaId, value));
+    }
+
+    // ========== 生命周期 ==========
+
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        super.attachBaseContext(base);
+        try {
+            applyDayNightOverride(getResources());
+        } catch (Throwable e) {
+            Log.w(TAG, "日夜模式覆盖失败", e);
+        }
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        // 全局崩溃捕获
+        final Thread.UncaughtExceptionHandler def = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            Log.e(TAG, "*** 崩溃 *** 线程=" + thread.getName() + " " + throwable.getClass().getName());
+            if (isBadTokenChain(throwable)) {
+                restartProcess();
+            } else {
+                if (def != null) def.uncaughtException(thread, throwable);
+            }
+        });
+
+        try {
+            setContentView(R.layout.activity_main);
+        } catch (Throwable e) {
+            Log.e(TAG, "[UI] setContentView 失败: " + e);
+            throw e;
+        }
+
+        initUi();
+
+        // 绑定数据服务
+        bindDataService();
+    }
+
+    @Override protected void onStart() { super.onStart(); }
+    @Override protected void onResume() { super.onResume(); }
+    @Override protected void onPause() { super.onPause(); }
+    @Override protected void onStop() { super.onStop(); }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        applyFontScale();
+        safeLoadCarImage();
+        clearShadow(findViewById(R.id.root));
+        scaleBannerByHeight();
+        scaleAcCardByHeight();
+        layoutCarTags();
+        updateDashboard();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (serviceBound && serviceConnection != null) {
+            if (dataService != null) dataService.unregisterListener(this);
+            try { unbindService(serviceConnection); } catch (Throwable ignored) {}
+            serviceBound = false;
+        }
+        unregisterAmapThemeReceiver();
+        unregisterModeReceiver();
+        super.onDestroy();
+    }
+
+    /** 监听乐酷驾驶的 SET_MODE 广播：mode=1（纯服务）时 Activity 自行退出，服务继续广播车况 */
+    private void registerModeReceiver() {
+        modeReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                String action = intent.getAction();
+                if (action == null) return;
+                if (ModeReceiver.ACTION_SET_MODE.equals(action)) {
+                    int mode = intent.getIntExtra(ModeReceiver.EXTRA_MODE, -1);
+                    if (mode == 1) {
+                        Log.i(TAG, "[Mode] 收到纯服务模式切换，Activity 退出");
+                        finish();
+                    }
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(ModeReceiver.ACTION_SET_MODE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                Method m = Context.class.getMethod("registerReceiver",
+                        BroadcastReceiver.class, IntentFilter.class, int.class);
+                m.invoke(this, modeReceiver, filter, Context.RECEIVER_EXPORTED);
+            } catch (Throwable e) {
+                registerReceiver(modeReceiver, filter);
+            }
+        } else {
+            registerReceiver(modeReceiver, filter);
+        }
+    }
+
+    private void unregisterModeReceiver() {
+        if (modeReceiver != null) {
+            try { unregisterReceiver(modeReceiver); } catch (Throwable ignored) {}
+            modeReceiver = null;
+        }
+    }
+
+    private static boolean pipSupported = true;
+
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (!pipSupported) return;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26 && checkPiPSupported()) {
+                enterPictureInPictureMode();
+            }
+        } catch (Throwable e) {
+            pipSupported = false;
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPiP, android.content.res.Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPiP, newConfig);
+    }
+
+    private boolean checkPiPSupported() {
+        try {
+            if (!getPackageManager().hasSystemFeature("android.software.picture_in_picture"))
+                return false;
+            android.content.pm.ActivityInfo ai = getPackageManager()
+                    .getActivityInfo(new android.content.ComponentName(getPackageName(), getClass().getName()), 0);
+            try {
+                java.lang.reflect.Field f = android.content.pm.ActivityInfo.class.getField("supportsPictureInPicture");
+                return f.getBoolean(ai);
+            } catch (NoSuchFieldException nsf) {
+                return true;
+            }
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    // ========== 日夜模式 ==========
+
     private void applyDayNightOverride(android.content.res.Resources res) {
         uiModePref = uiPrefs().getInt(KEY_DAY_MODE, MODE_NIGHT);
         int nightMode = (res.getConfiguration().uiMode
@@ -306,13 +305,11 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 安全 recreate：Activity 已销毁/正在结束时跳过，避免 BadTokenException */
     private void safeRecreate() {
         if (isFinishing() || isDestroyed()) return;
         recreate();
     }
 
-    /** 检测异常链中是否包含 BadTokenException（系统 handleRelaunchActivity 路径） */
     private static boolean isBadTokenChain(Throwable t) {
         while (t != null) {
             if (t instanceof android.view.WindowManager.BadTokenException) return true;
@@ -321,7 +318,6 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    /** 主动重启进程：杀掉自己后系统会重新拉起 Activity（singleTask） */
     private void restartProcess() {
         try {
             Intent i = getBaseContext().getPackageManager()
@@ -334,27 +330,22 @@ public class MainActivity extends Activity {
         android.os.Process.killProcess(android.os.Process.myPid());
     }
 
-    /** 页面单击切换：夜间 ↔ 白天，SP 持久化 + recreate */
     private void toggleDayNight() {
         int next = uiModePref == MODE_DAY ? MODE_NIGHT : MODE_DAY;
         uiPrefs().edit()
                 .putInt(KEY_DAY_MODE, next)
-                .putBoolean(KEY_AMAP_TRIGGERED, false) // 手动切换，暂停高德同步
+                .putBoolean(KEY_AMAP_TRIGGERED, false)
                 .apply();
-        bootLog("[UI] 日夜模式手动切换: " + (next == MODE_DAY ? "白天" : "夜间"));
         safeRecreate();
     }
 
-    /** 页面长按切换：开机自启 开 ↔ 关（BootReceiver 读取同一 SP 键） */
     private void toggleAutoStart() {
         boolean next = !uiPrefs().getBoolean(KEY_AUTO_START, false);
         uiPrefs().edit().putBoolean(KEY_AUTO_START, next).apply();
-        bootLog("[UI] 开机自启切换: " + (next ? "开" : "关"));
         android.widget.Toast.makeText(this,
                 "开机自启：" + (next ? "开" : "关"), android.widget.Toast.LENGTH_SHORT).show();
     }
 
-    /** 注册高德导航日夜模式广播 */
     private void registerAmapThemeReceiver() {
         amapThemeReceiver = new BroadcastReceiver() {
             @Override
@@ -364,18 +355,16 @@ public class MainActivity extends Activity {
                 if (keyType != KEY_TYPE_DAY_NIGHT) return;
                 int extraState = intent.getIntExtra("EXTRA_STATE", -1);
                 if (extraState != EXTRA_STATE_DAY && extraState != EXTRA_STATE_NIGHT) return;
-                // 防抖：500ms 内不重复处理
                 long now = System.currentTimeMillis();
                 if (now - lastAmapThemeTime < 500) return;
                 lastAmapThemeTime = now;
                 boolean isNight = (extraState == EXTRA_STATE_NIGHT);
                 int targetMode = isNight ? MODE_NIGHT : MODE_DAY;
-                if (targetMode == uiModePref) return; // 已是目标模式，无需切换
+                if (targetMode == uiModePref) return;
                 uiPrefs().edit()
                         .putInt(KEY_DAY_MODE, targetMode)
-                        .putBoolean(KEY_AMAP_TRIGGERED, true) // 高德触发，标记自动同步
+                        .putBoolean(KEY_AMAP_TRIGGERED, true)
                         .apply();
-                bootLog("[UI] 高德导航触发日夜切换: " + (isNight ? "夜间" : "白天"));
                 runOnUiThread(() -> safeRecreate());
             }
         };
@@ -386,183 +375,97 @@ public class MainActivity extends Activity {
                         BroadcastReceiver.class, IntentFilter.class, int.class);
                 m.invoke(this, amapThemeReceiver, filter, Context.RECEIVER_EXPORTED);
             } catch (Throwable e) {
-                Log.w(TAG, "反射注册高德广播失败，回退2参数: " + e);
                 registerReceiver(amapThemeReceiver, filter);
             }
         } else {
             registerReceiver(amapThemeReceiver, filter);
         }
-        bootLog("[UI] 高德导航日夜广播已注册");
-        // 主动查询高德当前日夜状态（应用启动时高德不会主动发广播）
         queryAmapDayNight();
     }
 
-    /** 主动向高德查询当前日夜模式 */
     private void queryAmapDayNight() {
         try {
             Intent query = new Intent("AUTONAVI_STANDARD_BROADCAST_GET");
             query.putExtra("KEY_TYPE", KEY_TYPE_DAY_NIGHT);
             sendBroadcast(query);
-            bootLog("[UI] 已向高德查询当前日夜状态");
-        } catch (Throwable e) {
-            Log.w(TAG, "查询高德日夜状态失败: " + e);
-        }
+        } catch (Throwable ignored) {}
     }
 
-    /** 注销高德导航日夜模式广播 */
     private void unregisterAmapThemeReceiver() {
         if (amapThemeReceiver != null) {
             try { unregisterReceiver(amapThemeReceiver); } catch (Throwable ignored) {}
             amapThemeReceiver = null;
         }
-        if (vehicleQueryReceiver != null) {
-            try { unregisterReceiver(vehicleQueryReceiver); } catch (Throwable ignored) {}
-            vehicleQueryReceiver = null;
+    }
+
+    // ========== UI 初始化 ==========
+
+    private void initUi() {
+        tvGear = findViewById(R.id.tvGear);
+        tvRange = findViewById(R.id.tvRange);
+        tvOdo = findViewById(R.id.tvOdo);
+        tvOil = findViewById(R.id.tvOil);
+        tvFuel = findViewById(R.id.tvFuel);
+        tvSpeed = findViewById(R.id.tvSpeed);
+        tvRangeUnit = findViewById(R.id.tvRangeUnit);
+        tvOdoUnit = findViewById(R.id.tvOdoUnit);
+        tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
+        tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
+        tvTempDriver = findViewById(R.id.tvTempDriver);
+        tvPm = findViewById(R.id.tvPm);
+        tvTempPassenger = findViewById(R.id.tvTempPassenger);
+        tagLFTire = findViewById(R.id.tagLFTire); tagRFTire = findViewById(R.id.tagRFTire);
+        tagLRTire = findViewById(R.id.tagLRTire); tagRRTire = findViewById(R.id.tagRRTire);
+        tagTrunk = findViewById(R.id.tagTrunk);
+        ivCar = findViewById(R.id.ivCar);
+        carZone = findViewById(R.id.carZone);
+        tagLines = findViewById(R.id.tagLines);
+        turnLeft = findViewById(R.id.turnLeft);
+        turnRight = findViewById(R.id.turnRight);
+        hvacToast = findViewById(R.id.hvacToast);
+        View root = findViewById(R.id.root);
+        if (root != null) {
+            root.setOnClickListener(v -> toggleDayNight());
+            root.setOnLongClickListener(v -> {
+                toggleAutoStart();
+                return true;
+            });
+        }
+        registerAmapThemeReceiver();
+        registerModeReceiver();
+        safeLoadCarImage();
+        applyFontScale();
+        clearShadow(findViewById(R.id.root));
+        scaleBannerByHeight();
+        scaleAcCardByHeight();
+        layoutCarTags();
+    }
+
+    private void clearShadow(View v) {
+        if (v instanceof TextView) {
+            ((TextView) v).setShadowLayer(0, 0, 0, 0);
+        } else if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) clearShadow(g.getChildAt(i));
         }
     }
 
-    // ==================== 车况查询接收（乐酷驾驶数据桥，拉模式补推模式空窗） ====================
+    // ========== 字号缩放 ==========
 
-    /** 广播 action：乐酷驾驶启动/翻页时定向查询，收到后回发当前快照 */
-    public static final String ACTION_VEHICLE_DATA_QUERY = "com.jingxin.lincarinfo.VEHICLE_DATA_QUERY";
-    private BroadcastReceiver vehicleQueryReceiver;
-
-    /** 注册车况查询接收器：乐酷查询时立即 refreshDisplay 回发当前快照
-     *  （指纹比对会让内容不变时不广播，故查询前清指纹强制发送） */
-    private void registerVehicleQueryReceiver() {
-        vehicleQueryReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (!ACTION_VEHICLE_DATA_QUERY.equals(intent.getAction())) return;
-                bootLog("[数据桥] 收到乐酷查询 → 回发当前快照");
-                // 清指纹+节流窗口，强制本次 refreshDisplay 必发广播
-                // （否则内容与上次相同时指纹比对拦截，乐酷拿不到数据）
-                lastVehicleBcFingerprint = "";
-                lastVehicleBcTime = 0L;
-                runOnUiThread(() -> {
-                    try { refreshDisplay(); } catch (Throwable e) {
-                        bootLog("[数据桥] 查询回发失败: " + rootCause(e));
-                    }
-                });
-            }
-        };
-        IntentFilter filter = new IntentFilter(ACTION_VEHICLE_DATA_QUERY);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                Method m = Context.class.getMethod("registerReceiver",
-                        BroadcastReceiver.class, IntentFilter.class, int.class);
-                m.invoke(this, vehicleQueryReceiver, filter, Context.RECEIVER_EXPORTED);
-            } catch (Throwable e) {
-                Log.w(TAG, "反射注册查询广播失败，回退2参数: " + e);
-                registerReceiver(vehicleQueryReceiver, filter);
-            }
-        } else {
-            registerReceiver(vehicleQueryReceiver, filter);
-        }
-    }
-
-    @Override
-    protected void attachBaseContext(android.content.Context base) {
-        super.attachBaseContext(base);
-        // 日夜模式覆盖：必须在 super.onCreate 之前生效，否则 setContentView 解析的是旧资源
-        try {
-            applyDayNightOverride(getResources());
-        } catch (Throwable e) {
-            android.util.Log.w(TAG, "日夜模式覆盖失败", e);
-        }
-    }
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        // 全局崩溃捕获：写日志后判断是否 BadTokenException（系统 relaunch 导致），
-        // 是则主动重启进程，避免转发系统处理器后假死黑屏
-        final Thread.UncaughtExceptionHandler def = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-            crashLog("*** 崩溃 *** 线程=" + thread.getName() + " " + throwable.getClass().getName());
-            String stack = stackTrace(throwable);
-            crashLog(stack);
-            if (isBadTokenChain(throwable)) {
-                crashLog("*** BadTokenException 检测到，主动重启进程 ***");
-                restartProcess();
-            } else {
-                if (def != null) def.uncaughtException(thread, throwable);
-            }
-        });
-
-        bootLog("");
-        bootLog("########################################################");
-        bootLog("##### 会话开始 " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(new Date()) + " #####");
-        bootLog("########################################################");
-        logDeviceInfo();
-
-        try {
-            setContentView(R.layout.activity_main);
-            bootLog("[UI] setContentView OK");
-        } catch (Throwable e) {
-            bootLog("[UI] setContentView 失败: " + stackTrace(e));
-            throw e;
-        }
-
-        initUi();
-        refreshDisplay();
-        bootLog("[UI] 字号缩放+标签定位完成");
-
-        ui("系统签名直读版探针启动");
-
-        // 一次性探测车机 Car API 支持情况
-        probeCarApiClasses();
-
-        // 在线更新检查（Gitee，启动时自动检查，仅一次，模拟器/车机均执行）
-        UpdateHelper.getInstance(this).checkOnLaunch(this);
-
-        if (!isCarApiAvailable()) {
-            bootLog("[onCreate] 此设备无 android.car.Car 类 — 模拟器模式：填模拟数据展示界面");
-            loadMockData();
-            bootLog("[onCreate] 结束: 无 Car API（模拟数据模式）");
-            return;
-        }
-
-        try {
-            connectCarService();
-        } catch (Throwable e) {
-            bootLog("[onCreate] connectCarService 异常:\n" + stackTrace(e));
-            ui("连接异常: " + e.getMessage());
-        }
-        bootLog("[onCreate] 完成");
-    }
-
-    // ========== 仪表盘 UI 辅助（V2） ==========
-
-    /** 判断当前是否横屏：用 Configuration 的 screenWidthDp/screenHeightDp（反映窗口实际可用尺寸），
-     *  而非屏幕物理分辨率——分屏拖宽时 DisplayMetrics.widthPixels 不变，但 screenWidthDp 会变大。 */
     private boolean isLandscape() {
         android.content.res.Configuration cfg = getResources().getConfiguration();
         return cfg.screenWidthDp > cfg.screenHeightDp * 1.2f;
     }
 
-    /** 获取窗口实际宽度 dp（用于字号缩放基准，分屏时随窗口宽度变化） */
-    private float windowWidthDp() {
-        android.content.res.Configuration cfg = getResources().getConfiguration();
-        return cfg.screenWidthDp;
-    }
-
-    /** 字号等比缩放：统一按窗口高度 dp 缩放，分屏拖宽时字号不变。
-     *  竖屏按 screenHeightDp/640，横屏按 screenWidthDp/640（横屏时宽度是较短边）。
-     *  banner/空调卡由 scaleBannerByHeight/scaleAcCardByHeight 按实际像素高度单独处理。 */
     private void applyFontScale() {
         try {
             android.content.res.Configuration cfg = getResources().getConfiguration();
             boolean landscape = isLandscape();
-            // 横屏时高度是 screenWidthDp（旋转后短边），竖屏时高度是 screenHeightDp
             float refDp = landscape ? cfg.screenWidthDp : cfg.screenHeightDp;
-            float scale = Math.min(refDp / DESIGN_HEIGHT_DP, 1.5f);  // 上限 1.5 防过大
-            scale = Math.max(scale, 0.5f);                          // 下限 0.5 防过小
-            bootLog("[UI] 参考高度=" + refDp + "dp → 字号缩放 " + String.format("%.2f", scale) + (landscape ? "(横屏)" : ""));
+            float scale = Math.min(refDp / DESIGN_HEIGHT_DP, 1.5f);
+            scale = Math.max(scale, 0.5f);
             View root = findViewById(R.id.root);
             scaleTextSize(root, scale);
-            // 圆形标签用同一套高度缩放，保持一致
             float circleScale = Math.min(refDp / 540f, 1f);
             circleScale = Math.max(circleScale, 0.5f);
             if (tagLFTire != null) tagLFTire.setDpScale(circleScale);
@@ -575,7 +478,7 @@ public class MainActivity extends Activity {
             if (tagRRDw != null) tagRRDw.setDpScale(circleScale);
             if (tagTrunk != null) tagTrunk.setDpScale(circleScale);
         } catch (Throwable e) {
-            bootLog("[UI] applyFontScale 失败: " + rootCause(e));
+            Log.w(TAG, "[UI] applyFontScale 失败: " + e);
         }
     }
 
@@ -589,8 +492,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** banner 字号：按 banner 实际像素高度缩放，横屏竖屏统一。
-     *  竖屏额外检查内容宽度是否溢出，溢出则等比缩小。 */
     private void scaleBannerByHeight() {
         final View banner = findViewById(R.id.banner);
         if (banner == null) return;
@@ -606,31 +507,22 @@ public class MainActivity extends Activity {
                             float valSize = bh * 0.42f;
                             float lblSize = bh * 0.15f;
                             scaleBannerText(banner, valSize, lblSize);
-                            bootLog("[UI] 横屏 banner高=" + bh + "px → 数值" + valSize + "px 标签" + lblSize + "px(按高度)");
                         } else {
-                            // 竖屏：先按高度设字号，再检查宽度是否溢出
                             float valSize = bh * 0.42f;
                             float lblSize = bh * 0.15f;
                             scaleBannerText(banner, valSize, lblSize);
                             fitBannerWidth(banner, bw);
-                            bootLog("[UI] 竖屏 banner高=" + bh + "px 宽=" + bw + "px → 按高度+宽度溢出检查");
                         }
                     } catch (Throwable e) {
-                        bootLog("[UI] scaleBannerByHeight 失败: " + rootCause(e));
                         banner.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                     }
                 }
             });
     }
 
-    /**
-     * 竖屏 banner 宽度自适应：测量所有子 View 内容宽度总和，
-     * 如超出 banner 可用宽度，则等比缩小字号和间距。
-     */
     private void fitBannerWidth(View banner, int bannerWidth) {
         if (!(banner instanceof android.view.ViewGroup)) return;
         android.view.ViewGroup group = (android.view.ViewGroup) banner;
-        // 测量所有子 View 的总宽度（含 margin）
         int contentWidth = 0;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
@@ -638,13 +530,10 @@ public class MainActivity extends Activity {
             android.widget.LinearLayout.LayoutParams lp = (android.widget.LinearLayout.LayoutParams) child.getLayoutParams();
             contentWidth += child.getMeasuredWidth() + lp.leftMargin + lp.rightMargin;
         }
-        if (contentWidth <= bannerWidth) return; // 未溢出，无需缩放
+        if (contentWidth <= bannerWidth) return;
         float ratio = (float) bannerWidth / contentWidth;
-        // 缩小字号
         scaleBannerTextByRatio(banner, ratio);
-        // 缩小间距
         scaleBannerMarginByRatio(group, ratio);
-        bootLog("[UI] banner内容=" + contentWidth + "px > 可用=" + bannerWidth + "px → 缩放比例=" + String.format("%.2f", ratio));
     }
 
     private void scaleBannerTextByRatio(View v, float ratio) {
@@ -672,19 +561,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 递归设 banner 内 TextView 字号：有 id 的设 valSize，无 id 的设 lblSize。
-     *  单位 TextView（tvRangeUnit/tvOdoUnit）单独按 valSize 的 0.5 倍，比数值小一半。 */
     private void scaleBannerText(View v, float valSize, float lblSize) {
         if (v instanceof TextView) {
             TextView tv = (TextView) v;
             int id = tv.getId();
             float size;
             if (id == R.id.tvRangeUnit || id == R.id.tvOdoUnit) {
-                size = valSize * 0.5f;   // 单位字号 = 数值的 50%
+                size = valSize * 0.5f;
             } else if (id != View.NO_ID) {
-                size = valSize;           // 数值
+                size = valSize;
             } else {
-                size = lblSize;           // 标签
+                size = lblSize;
             }
             tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
         } else if (v instanceof android.view.ViewGroup) {
@@ -693,8 +580,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** acCard 宽度溢出检查：测量每个 zone 内最宽 TextView 是否超出 zone 可用宽度，
-     *  溢出则等比缩小该 zone 内所有 TextView 字号，保证不折行不截断。 */
     private void fitAcCardWidth(View acCard) {
         if (!(acCard instanceof android.view.ViewGroup)) return;
         android.view.ViewGroup cardOuter = (android.view.ViewGroup) acCard;
@@ -708,7 +593,6 @@ public class MainActivity extends Activity {
             android.view.ViewGroup zone = (android.view.ViewGroup) child;
             int zoneW = zone.getWidth() - zone.getPaddingLeft() - zone.getPaddingRight();
             if (zoneW <= 0) continue;
-            // 找 zone 内最宽的 TextView
             int maxTextW = 0;
             for (int j = 0; j < zone.getChildCount(); j++) {
                 View tv = zone.getChildAt(j);
@@ -720,13 +604,10 @@ public class MainActivity extends Activity {
             if (maxTextW > zoneW && maxTextW > 0) {
                 float ratio = (float) zoneW / maxTextW;
                 scaleBannerTextByRatio(zone, ratio);
-                bootLog("[UI] acCard zone" + i + " 内容=" + maxTextW + "px > 可用=" + zoneW + "px → 缩放" + String.format("%.2f", ratio));
             }
         }
     }
 
-
-    /** 空调卡字号：横屏按高度比例覆盖；竖屏不处理（已由 applyFontScale 按宽度缩放） */
     private void scaleAcCardByHeight() {
         final View acCard = findViewById(R.id.acCard);
         if (acCard == null) return;
@@ -738,21 +619,18 @@ public class MainActivity extends Activity {
                         if (ah <= 0) return;
                         acCard.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                         if (isLandscape()) {
-                            // 横屏：压缩外层 padding 释放空间，保持两行显示（与竖屏一致）
                             acCard.setPadding(dip(10), dip(1), dip(10), dip(1));
                             LinearLayout.LayoutParams acLp = (LinearLayout.LayoutParams) acCard.getLayoutParams();
                             acLp.bottomMargin = dip(3);
                             acCard.setLayoutParams(acLp);
                             android.view.ViewGroup cardOuter = (android.view.ViewGroup) acCard;
                             android.view.ViewGroup cardRow = (android.view.ViewGroup) cardOuter.getChildAt(0);
-                            // 保持竖直排列（标签上、数值下），留上下 padding
                             for (int i = 0; i < cardRow.getChildCount(); i++) {
                                 View child = cardRow.getChildAt(i);
                                 if (child instanceof LinearLayout) {
                                     LinearLayout zone = (LinearLayout) child;
                                     zone.setOrientation(LinearLayout.VERTICAL);
                                     zone.setPadding(dip(3), dip(8), dip(3), dip(8));
-                                    // 清除横屏一行时加的左间距
                                     for (int j = 0; j < zone.getChildCount(); j++) {
                                         View tv = zone.getChildAt(j);
                                         if (tv instanceof TextView) {
@@ -761,46 +639,30 @@ public class MainActivity extends Activity {
                                     }
                                 }
                             }
-                            // 按子区域实际高度设字号：先扣上下 padding，再除以 1.25（行高系数）
                             android.view.ViewGroup zone = (android.view.ViewGroup) cardRow.getChildAt(0);
                             int zoneH = zone.getHeight();
                             if (zoneH > 0) {
-                                int usable = zoneH - dip(16);  // 上下各 8dp padding
-                                float textTotal = usable / 1.25f;   // 两行字号总和（渲染高度=字号×1.25）
-                                float valSize = textTotal * 0.7f;    // 数值占 70%
-                                float lblSize = textTotal * 0.3f;    // 标签占 30%
+                                int usable = zoneH - dip(16);
+                                float textTotal = usable / 1.25f;
+                                float valSize = textTotal * 0.7f;
+                                float lblSize = textTotal * 0.3f;
                                 scaleBannerText(acCard, valSize, lblSize);
-                                bootLog("[UI] 横屏 acCard高=" + ah + " zoneH=" + zoneH + " → 两行显示 数值" + valSize + "px 标签" + lblSize + "px");
                             }
                         } else {
-                            // 竖屏：按 acCard 总高度缩放，文字渲染高度占75%（与 banner 一致），忽略 padding
-                            float valSize = ah * 0.45f;   // 数值 45%
-                            float lblSize = ah * 0.15f;   // 标签 15%（合计60%，×1.25渲染=75%）
+                            float valSize = ah * 0.45f;
+                            float lblSize = ah * 0.15f;
                             scaleBannerText(acCard, valSize, lblSize);
                             fitAcCardWidth(acCard);
-                            bootLog("[UI] 竖屏 acCard高=" + ah + "px → 数值" + valSize + "px 标签" + lblSize + "px(按总高75%)");
                         }
                     } catch (Throwable e) {
-                        bootLog("[UI] scaleAcCardByHeight 失败: " + rootCause(e));
                         acCard.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                     }
                 }
             });
     }
 
+    // ========== 标签定位 ==========
 
-    /**
-     * 车图区标签定位：锚点相对「车体实际矩形」+ 固定外扩间距。
-     * 原理：fitCenter 缩放后车图矩形可算出（1000:1333 比例固定，4:3），
-     * 车体在图内范围（像素分析实锚）：x 21.9%~78.0%、y 11.4%~88.7%。
-     * 换算出车体矩形后，标签按"车体外缘外扩 gap"定位——
-     * 任意屏宽比例下标签都围绕车体、保持呼吸距离，不挤不压。
-     *
-     * 布置（定稿）：
-     *   胎压标签——对齐四轮胎心高度（y 前轮 36.5% 后轮 67%），x 在车体外左右两侧
-     *   门窗标签——对齐前后轮之间偏上/偏下（y 30%/72%），x 在车体外左右两侧，与胎压标签错位
-     *   后备箱——车体下方居中
-     */
     private void layoutCarTags() {
         if (carZone == null || ivCar == null) return;
         carZone.getViewTreeObserver().addOnGlobalLayoutListener(
@@ -809,9 +671,6 @@ public class MainActivity extends Activity {
                     @Override
                     public void onGlobalLayout() {
                         try {
-                            // pass 0: 初始测量 → positionCarTags 可能缩小圆形 → requestLayout
-                            // pass 1: 圆形新尺寸到位 → positionCarTags 最终定位 → requestLayout
-                            // pass 2: 定型，收工
                             boolean needRelayout = positionCarTags();
                             if (needRelayout && pass < 2) {
                                 pass++;
@@ -820,66 +679,42 @@ public class MainActivity extends Activity {
                                 carZone.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                             }
                         } catch (Throwable e) {
-                            bootLog("[UI] 标签定位失败: " + rootCause(e));
                             carZone.getViewTreeObserver().removeOnGlobalLayoutListener(this);
                         }
                     }
                 });
     }
 
-    /**
-     * 车图区标签定位 + 圆形宽度溢出检测。
-     * @return true 如果因宽度不足缩小了圆形尺寸，调用方需 requestLayout 重新测量。
-     */
     private boolean positionCarTags() {
         int zw = carZone.getWidth(), zh = carZone.getHeight();
         if (zw <= 0 || zh <= 0) return false;
-        bootLog("[UI] carZone=" + zw + "x" + zh + " 镜像对称定位");
 
-        float tireEdgeX = zw * 0.14f;       // 胎压标签离左/右边缘 14%
-        float dwEdgeX = zw * 0.06f;        // 门窗标签离左/右边缘 6%
+        float tireEdgeX = zw * 0.14f;
+        float dwEdgeX = zw * 0.06f;
 
-        // 对称轴：前后门窗标注点中点 y=52.5%（相对车图 fitH）
         float[] r = carImgRect(zw, zh);
         float axisY = r[1] + r[3] * 0.525f;
 
-        // —— 宽度溢出检测：圆形标签右边缘不能超过车体实际边缘 ——
-        // 车图 PNG 两侧有透明区，不能用整张图边缘 r[0] 来约束，
-        // 用轮胎外缘 21.9%（车体最宽处）作为实际边界
         float carBodyLeft = r[0] + r[2] * 0.219f;
         float carBodyRight = r[0] + r[2] * 0.781f;
-        // 门窗标签基准最大（统一 90dp），且离边最近（6%），约束最紧
         float dwBaseDp = 90f;
         float density = getResources().getDisplayMetrics().density;
-        // 门窗可用宽度 = 车体左边缘 - 门窗标签左边缘
         float dwAvail = carBodyLeft - dwEdgeX;
-        // 宽度缩放因子 = 可用宽度 / 门窗基准直径(px)
         float widthScale = dwAvail / (dwBaseDp * density);
-        widthScale = Math.max(widthScale, 0.3f);   // 下限防极端
+        widthScale = Math.max(widthScale, 0.3f);
 
-        // 高度缩放因子（与 applyFontScale 中一致）
         android.content.res.Configuration cfg = getResources().getConfiguration();
         float refDp = isLandscape() ? cfg.screenWidthDp : cfg.screenHeightDp;
         float heightScale = Math.min(refDp / 540f, 1f);
         heightScale = Math.max(heightScale, 0.5f);
 
-        // 最终取两者较小值
         float finalScale = Math.min(heightScale, widthScale);
-        if (finalScale < heightScale) {
-            bootLog("[UI] 圆形宽度约束: 宽度scale=" + String.format("%.2f", widthScale)
-                    + " < 高度scale=" + String.format("%.2f", heightScale)
-                    + " → 取" + String.format("%.2f", finalScale) + " (可用=" + dwAvail + "px)");
-        }
-
-        // 如果 finalScale 比当前 circleScale 小，更新所有圆形标签
         boolean needRelayout = applyCircleScaleIfNeeded(finalScale);
 
-        // 前胎压标签：跟随车图顶部，留一定间距
         float tireTopY = r[1] - dip(6);
         placeCornerTag(tagLFTire, tireEdgeX, tireTopY, true, false);
         placeCornerTag(tagRFTire, zw - tireEdgeX, tireTopY, false, false);
 
-        // 左侧：前胎压中心 → 镜像后胎压中心 → 等间距放门窗
         float cFL = tireTopY + (tagLFTire != null ? tagLFTire.getHeight() : 0) / 2f;
         float cRL = 2f * axisY - cFL;
         centerTagAt(tagLRTire, tireEdgeX, cRL, true);
@@ -887,7 +722,6 @@ public class MainActivity extends Activity {
         centerTagAt(tagLFDw, dwEdgeX, cFL + stepL, true);
         centerTagAt(tagLRDw, dwEdgeX, cFL + stepL * 2f, true);
 
-        // 右侧：同理
         float cFR = tireTopY + (tagRFTire != null ? tagRFTire.getHeight() : 0) / 2f;
         float cRR = 2f * axisY - cFR;
         centerTagAt(tagRRTire, zw - tireEdgeX, cRR, false);
@@ -895,7 +729,6 @@ public class MainActivity extends Activity {
         centerTagAt(tagRFDw, zw - dwEdgeX, cFR + stepR, false);
         centerTagAt(tagRRDw, zw - dwEdgeX, cFR + stepR * 2f, false);
 
-        // 后备箱：水平中心对齐车图中心，垂直与后胎压标签中心对齐
         if (tagTrunk != null) {
             int w = tagTrunk.getWidth(), h = tagTrunk.getHeight();
             android.widget.FrameLayout.LayoutParams lp =
@@ -912,48 +745,36 @@ public class MainActivity extends Activity {
         }
         if (tagTrunk != null) tagTrunk.bringToFront();
 
-        // —— 速度字号：根据 banner 底边到车体顶边的实际间距动态计算 ——
-        // tvSpeed 在 carZone 顶部，车体顶边 = r[1] + r[3]*11.4%（车图内车体顶部比例）
-        // 上下各留 15dp，TextView 高度=可用空间，文字 gravity=center 垂直居中
         if (tvSpeed != null) {
             float carBodyTop = r[1] + r[3] * 0.114f;
             float gap = dip(15);
             float availH = carBodyTop - gap - gap;
             if (availH > 0) {
-                float textSize = availH / 1.25f;   // 文字渲染高度≈textSize×1.25
-                // 竖屏空间充裕时速度字会过大，封顶 60sp
+                float textSize = availH / 1.25f;
                 float maxTextSize = 60f * getResources().getDisplayMetrics().density;
                 textSize = Math.min(textSize, maxTextSize);
                 tvSpeed.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize);
-                // TextView 高度按封顶后字号回算，保持文字垂直居中
                 tvSpeed.setHeight(Math.round(textSize * 1.25f));
                 android.widget.FrameLayout.LayoutParams lp =
                         (android.widget.FrameLayout.LayoutParams) tvSpeed.getLayoutParams();
                 lp.topMargin = Math.round(gap);
                 tvSpeed.setLayoutParams(lp);
-                bootLog("[UI] 速度字号: 车体顶边=" + carBodyTop + "px 可用=" + availH + "px textSize=" + textSize + "px");
             }
         }
 
-        // —— 转向灯定位：速度左右两侧，与速度同一水平线 ——
         if (turnLeft != null && turnRight != null && tvSpeed != null) {
             float carBodyTop = r[1] + r[3] * 0.114f;
             float gap = dip(15);
             float availH = carBodyTop - gap - gap;
             float arrowSize = availH > 0 ? availH * 0.8f : dip(30);
-            // 竖屏空间充裕时转向灯也会过大，封顶与速度字号同高（60sp×1.25×0.8）
             float maxArrow = 60f * getResources().getDisplayMetrics().density * 1.25f * 0.8f;
             arrowSize = Math.min(arrowSize, maxArrow);
             int sizePx = Math.round(arrowSize);
-            // 转向灯箭头视觉顶部与速度文字顶部对齐：
-            // 箭头在 view 内垂直居中且只占 70% 高度，view 顶部需上移 sizePx*0.15
             float speedTopY = gap;
-            // 速度 TextView 宽度（测量后）
             tvSpeed.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
             int speedW = tvSpeed.getMeasuredWidth();
             float speedCenterX = zw / 2f;
-            float offset = speedW / 2f + dip(8);  // 速度右边缘 + 8dp 间距
-            // 左转向灯
+            float offset = speedW / 2f + dip(8);
             android.widget.FrameLayout.LayoutParams lpL =
                     (android.widget.FrameLayout.LayoutParams) turnLeft.getLayoutParams();
             lpL.width = sizePx;
@@ -961,7 +782,6 @@ public class MainActivity extends Activity {
             lpL.leftMargin = Math.round(speedCenterX - offset - sizePx);
             lpL.topMargin = Math.round(speedTopY - sizePx * 0.15f);
             turnLeft.setLayoutParams(lpL);
-            // 右转向灯
             android.widget.FrameLayout.LayoutParams lpR =
                     (android.widget.FrameLayout.LayoutParams) turnRight.getLayoutParams();
             lpR.width = sizePx;
@@ -973,71 +793,45 @@ public class MainActivity extends Activity {
             turnRight.bringToFront();
         }
 
-        // —— 空调状态提示定位：车图底部到 carZone 底部，文字底部贴近底部空调区顶部 ——
         if (hvacToast != null) {
-            // 车体底部 y = r[1] + r[3] * 0.887（车图内车体底部比例）
             float carBodyBottom = r[1] + r[3] * 0.887f;
             float zoneBottom = zh;
             float centerAreaH = zoneBottom - carBodyBottom;
-            float toastH = centerAreaH * 0.6f;   // 占中间区域高度 60%
+            float toastH = centerAreaH * 0.6f;
             if (toastH > 0) {
-                float textSize = toastH / 1.25f;  // 文字渲染高度≈textSize×1.25
+                float textSize = toastH / 1.25f;
                 hvacToast.setMaxTextSize(textSize);
                 android.widget.FrameLayout.LayoutParams lpToast =
                         (android.widget.FrameLayout.LayoutParams) hvacToast.getLayoutParams();
                 lpToast.width = zw;
                 lpToast.height = Math.round(toastH);
                 lpToast.leftMargin = 0;
-                // View 底部贴齐 carZone 底部（即空调区顶部）
                 lpToast.topMargin = Math.round(zoneBottom - toastH);
                 hvacToast.setLayoutParams(lpToast);
                 hvacToast.bringToFront();
             }
         }
 
-        // —— 9 个红点紧贴车图 + 虚线连到标签 ——
         linkTagDots();
         return needRelayout;
     }
 
-    /** 按 finalScale 更新所有圆形标签的 dpScale，仅在比当前值小时才更新。
-     *  @return true 如果发生了缩小，调用方需 requestLayout 触发重新测量。 */
     private boolean applyCircleScaleIfNeeded(float finalScale) {
         boolean changed = false;
-        if (tagLFTire != null && finalScale < tagLFTire.getDpScale()) {
-            tagLFTire.setDpScale(finalScale); changed = true;
-        }
-        if (tagRFTire != null && finalScale < tagRFTire.getDpScale()) {
-            tagRFTire.setDpScale(finalScale); changed = true;
-        }
-        if (tagLRTire != null && finalScale < tagLRTire.getDpScale()) {
-            tagLRTire.setDpScale(finalScale); changed = true;
-        }
-        if (tagRRTire != null && finalScale < tagRRTire.getDpScale()) {
-            tagRRTire.setDpScale(finalScale); changed = true;
-        }
-        if (tagLFDw != null && finalScale < tagLFDw.getDpScale()) {
-            tagLFDw.setDpScale(finalScale); changed = true;
-        }
-        if (tagRFDw != null && finalScale < tagRFDw.getDpScale()) {
-            tagRFDw.setDpScale(finalScale); changed = true;
-        }
-        if (tagLRDw != null && finalScale < tagLRDw.getDpScale()) {
-            tagLRDw.setDpScale(finalScale); changed = true;
-        }
-        if (tagRRDw != null && finalScale < tagRRDw.getDpScale()) {
-            tagRRDw.setDpScale(finalScale); changed = true;
-        }
-        if (tagTrunk != null && finalScale < tagTrunk.getDpScale()) {
-            tagTrunk.setDpScale(finalScale); changed = true;
-        }
+        if (tagLFTire != null && finalScale < tagLFTire.getDpScale()) { tagLFTire.setDpScale(finalScale); changed = true; }
+        if (tagRFTire != null && finalScale < tagRFTire.getDpScale()) { tagRFTire.setDpScale(finalScale); changed = true; }
+        if (tagLRTire != null && finalScale < tagLRTire.getDpScale()) { tagLRTire.setDpScale(finalScale); changed = true; }
+        if (tagRRTire != null && finalScale < tagRRTire.getDpScale()) { tagRRTire.setDpScale(finalScale); changed = true; }
+        if (tagLFDw != null && finalScale < tagLFDw.getDpScale()) { tagLFDw.setDpScale(finalScale); changed = true; }
+        if (tagRFDw != null && finalScale < tagRFDw.getDpScale()) { tagRFDw.setDpScale(finalScale); changed = true; }
+        if (tagLRDw != null && finalScale < tagLRDw.getDpScale()) { tagLRDw.setDpScale(finalScale); changed = true; }
+        if (tagRRDw != null && finalScale < tagRRDw.getDpScale()) { tagRRDw.setDpScale(finalScale); changed = true; }
+        if (tagTrunk != null && finalScale < tagTrunk.getDpScale()) { tagTrunk.setDpScale(finalScale); changed = true; }
         return changed;
     }
 
-
-    /** 算车图 fitCenter 显示矩形（1000:1333 比例，4:3），返回 left/top/fitW/fitH。 */
     private float[] carImgRect(int zw, int zh) {
-        float ratio = 1333f / 1000f; // 高/宽
+        float ratio = 1333f / 1000f;
         int mL = dip(30) + dip(6), mR = dip(30) + dip(6);
         int mT = dip(24) + dip(6), mB = dip(24) + dip(6);
         int availW = Math.max(1, zw - mL - mR);
@@ -1049,65 +843,45 @@ public class MainActivity extends Activity {
         return new float[]{left, top, fitW, fitH};
     }
 
-    /** 9 个标注点标在车图实体上（轮胎心/车体侧缘/车尾），虚线连到对应标签中心；alert=true 红色，false 青色 */
     private void linkTagDots() {
-        if (tagLines == null) return;
+        if (tagLines == null || currentData == null) return;
         int zw = carZone.getWidth(), zh = carZone.getHeight();
         float[] r = carImgRect(zw, zh);
         float left = r[0], top = r[1], fitW = r[2], fitH = r[3];
-        // 车门高度车体实测边缘（y 43%/56% 处）：x 26.9% / 73.1%（21.9%/78.0% 是轮胎外缘，不是车体）
         float bodyL = left + fitW * 0.269f, bodyR = left + fitW * 0.731f;
-        // 四轮胎心（像素实测：前轮 y 29%、后轮 y 73.2%，左轮 x 24%、右轮 x 75.8%）
         float tireFrontY = top + fitH * 0.290f, tireRearY = top + fitH * 0.732f;
         float tireLX = left + fitW * 0.240f, tireRX = left + fitW * 0.758f;
-        // 车门位置（图内 y 46% / 59%；后门窗点下移，与前门窗点拉开足够间距）
         float doorFrontY = top + fitH * 0.460f, doorRearY = top + fitH * 0.590f;
-        // 车尾（x 50%，y 86% 车体底部附近）
         float tailX = left + fitW * 0.50f, tailY = top + fitH * 0.860f;
 
         tagLines.clear();
-        // 胎压 4 点 → 四轮胎心（异常=压力<200kPa）
-        tagLines.setLink(tireLX, tireFrontY, tagLFTire, tireAlert(tireData.get(1)), true);
-        tagLines.setLink(tireRX, tireFrontY, tagRFTire, tireAlert(tireData.get(2)), true);
-        tagLines.setLink(tireLX, tireRearY, tagLRTire, tireAlert(tireData.get(4)), true);
-        tagLines.setLink(tireRX, tireRearY, tagRRTire, tireAlert(tireData.get(8)), true);
-        // 门窗 4 点 → 车体左右边缘车门处（异常=门开或窗开）
-        tagLines.setLink(bodyL, doorFrontY, tagLFDw, doorAlert(evDoorLB, winDriver));
-        tagLines.setLink(bodyR, doorFrontY, tagRFDw, doorAlert(evDoorRB, winPassenger));
-        tagLines.setLink(bodyL, doorRearY, tagLRDw, doorAlert(evDoorLR, winLeftRear));
-        tagLines.setLink(bodyR, doorRearY, tagRRDw, doorAlert(evDoorRR, winRightRear));
-        // 尾部 1 点 → 车尾中央（异常=后备箱/尾门开）
-        tagLines.setLink(tailX, tailY, tagTrunk,
-                getInt(evTrunkIn) > 0 || getInt(evTrunkOut) > 0);
+        // 胎压 4 点
+        tagLines.setLink(tireLX, tireFrontY, tagLFTire, tireAlert(0), true);
+        tagLines.setLink(tireRX, tireFrontY, tagRFTire, tireAlert(1), true);
+        tagLines.setLink(tireLX, tireRearY, tagLRTire, tireAlert(2), true);
+        tagLines.setLink(tireRX, tireRearY, tagRRTire, tireAlert(3), true);
+        // 门窗 4 点
+        tagLines.setLink(bodyL, doorFrontY, tagLFDw, doorAlert(currentData.doorLB, currentData.winDriver), false);
+        tagLines.setLink(bodyR, doorFrontY, tagRFDw, doorAlert(currentData.doorRB, currentData.winPassenger), false);
+        tagLines.setLink(bodyL, doorRearY, tagLRDw, doorAlert(currentData.doorLR, currentData.winLeftRear), false);
+        tagLines.setLink(bodyR, doorRearY, tagRRDw, doorAlert(currentData.doorRR, currentData.winRightRear), false);
+        // 尾部
+        tagLines.setLink(tailX, tailY, tagTrunk, currentData.trunkIn > 0 || currentData.trunkOut > 0);
         tagLines.apply();
     }
 
     /** 胎压异常判定：<200kPa（无效值 65533 视为无数据不报警） */
-    private boolean tireAlert(TireData td) {
-        return td != null && td.pressure < 200f && td.pressure < 65533f;
+    private boolean tireAlert(int idx) {
+        if (currentData == null) return false;
+        float p = currentData.tirePressure[idx];
+        return p > 0 && p < 200f && p < 65533f;
     }
 
-    /** 门窗异常判定：门开或窗未关（窗 1=关，其余有效值都算未关，-1 无数据。对齐 CarLauncher dn.f()） */
-    private boolean doorAlert(Object doorEv, int winState) {
-        return getInt(doorEv) > 0 || (winState >= 0 && winState != 1);
+    /** 门窗异常判定：门开或窗未关 */
+    private boolean doorAlert(int doorState, int winState) {
+        return doorState > 0 || (winState >= 0 && winState != 1);
     }
 
-    /**
-     * 一侧 4 个标签垂直等间距：前胎压(顶部锚) → 门窗A → 门窗B → 后胎压(底部锚)
-     * 前/后胎压位置固定，两个门窗标签按 1/3、2/3 分点垂直居中分布
-     * @param x       门窗标签 x 锚点；atLeft=true 左对齐，false 右对齐
-     */
-    private void placeBetweenTires(View tireFront, View dwA, View dwB, View tireRear,
-                                   float tireTopY, float tireBotY, float x, boolean atLeft) {
-        if (tireFront == null || tireRear == null || dwA == null || dwB == null) return;
-        float cFront = tireTopY + tireFront.getHeight() / 2f;   // 前胎压中心
-        float cRear = tireBotY - tireRear.getHeight() / 2f;     // 后胎压中心
-        float step = (cRear - cFront) / 3f;                     // 四标签三段等距
-        centerTagAt(dwA, x, cFront + step, atLeft);
-        centerTagAt(dwB, x, cFront + step * 2f, atLeft);
-    }
-
-    /** 标签垂直居中于 centerY；atLeft=true 水平左对齐 x，false 水平右对齐 x */
     private void centerTagAt(View tag, float x, float centerY, boolean atLeft) {
         if (tag == null) return;
         int w = tag.getWidth(), h = tag.getHeight();
@@ -1118,28 +892,20 @@ public class MainActivity extends Activity {
         tag.setLayoutParams(lp);
     }
 
-    /**
-     * 角标签定位（替代旧 placeSideTag）
-     * @param x  目标 x（标签锚点的 x）
-     * @param y  目标 y（标签锚点的 y）
-     * @param atLeft  true=标签在左侧，x 为左边缘距离，水平左对齐到该 x
-     *                false=标签在右侧，x 为右边缘距离，水平右对齐到该 x
-     * @param anchorBottom true=标签底部对齐 y（用于下方标签），false=标签顶部对齐 y
-     */
     private void placeCornerTag(View tag, float x, float y, boolean atLeft, boolean anchorBottom) {
         if (tag == null) return;
         int w = tag.getWidth(), h = tag.getHeight();
         android.widget.FrameLayout.LayoutParams lp =
                 (android.widget.FrameLayout.LayoutParams) tag.getLayoutParams();
         if (atLeft) {
-            lp.leftMargin = Math.round(x);           // 左对齐：leftMargin = x
+            lp.leftMargin = Math.round(x);
         } else {
-            lp.leftMargin = Math.round(x - w);       // 右对齐：标签右边贴 x
+            lp.leftMargin = Math.round(x - w);
         }
         if (anchorBottom) {
-            lp.topMargin = Math.round(y - h);        // 底部对齐 y
+            lp.topMargin = Math.round(y - h);
         } else {
-            lp.topMargin = Math.round(y);            // 顶部对齐 y
+            lp.topMargin = Math.round(y);
         }
         tag.setLayoutParams(lp);
     }
@@ -1149,1303 +915,148 @@ public class MainActivity extends Activity {
         return Math.round(dp * d);
     }
 
-    /** 模拟器模式：模拟数据全套（用户定稿 V12 效果图数值）展示界面用 */
-    private void loadMockData() {
-        hasRealData = false;
-        // 传感器类模拟事件
-        evGear = mockEvent(SENSOR_GEAR, new int[]{0});                    // P 挡
-        evRange = mockEvent(SENSOR_RANGE, new float[]{503f});             // 续航 503km
-        evOdometer = mockEvent(SENSOR_ODOMETER, new float[]{74595f});     // 总里程
-        evOilLife = mockEvent(SENSOR_OIL_LIFE, new int[]{75});            // 机油寿命 75%
-        evFuelPct = mockEvent(SENSOR_FUEL_PCT, new float[]{81f});        // 燃油 81%
-        evSpeed = mockEvent(SENSOR_SPEED, new float[]{0f});               // 车速 0
-        evDoorLB = mockEvent(SENSOR_DOOR_LB, new int[]{1});               // 左前门开
-        evDoorRB = mockEvent(SENSOR_DOOR_RB, new int[]{0});
-        evDoorLR = mockEvent(SENSOR_DOOR_LR, new int[]{0});
-        evDoorRR = mockEvent(SENSOR_DOOR_RR, new int[]{1});               // 右后门开
-        evTrunkIn = mockEvent(SENSOR_TRUNK_IN, new int[]{0});              // 后备箱关
-        evTrunkOut = mockEvent(SENSOR_DOOR_TRUNK_OUT, new int[]{0});       // 后备箱关
-        // 四轮胎压 220/220/220/225 kPa、胎温 19.5℃
-        int[] areas = {1, 2, 4, 8};
-        float[] pressures = {220f, 220f, 220f, 225f};
-        for (int i = 0; i < areas.length; i++) {
-            tireData.put(areas[i], new TireData(50, pressures[i], 19.5f));
-        }
-        tireUnit = "kPa";
-        // 车窗：左前开（与门对应），其余关
-        winDriver = 0; winPassenger = 1; winLeftRear = 1; winRightRear = 1; // 0=开 1=关
-        // HVAC：双区 23.0℃、风量1档、A/C关、内循环开、进气外循环、座椅通风关、出风强度12
-        hvacProps.put(16385, "area1=23.0;area4=23.0");
-        hvacProps.put(16388, "area0=1");
-        hvacProps.put(16393, "area8=0");
-        hvacProps.put(16395, "area8=1");
-        hvacProps.put(20481, "area1=0;area2=0");
-        hvacProps.put(20487, "area8=2");
-        hvacProps.put(20513, "area16777216=12");
-        aarPmNow = 4;
-        refreshDisplay();
-        bootLog("[模拟] 模拟数据已填入");
+    // ========== 车图安全加载 ==========
 
-    }
-
-    /** 构造与 CarSensorEvent 同构的模拟对象（floatValues/intValues/sensorType 公有字段） */
-    private Object mockEvent(int sensorType, Object values) {
-        // 简单匿名类模拟：CarSensorEvent 的字段是公有的，用反射读——
-        // 模拟器上无真实类，这里用 HashMap 代替，getFloat/getInt 已兼容 Object：
-        // 直接返回一个含公有 floatValues/intValues 字段的匿名子类
-        return new CarSensorEventMock(sensorType, values);
-    }
-
-    /** 模拟事件：公有字段 floatValues/intValues 与真实 CarSensorEvent 结构一致，
-     *  getFloat()/getInt() 的反射 getField 可直接读取 */
-    public static class CarSensorEventMock {
-        public final int sensorType;
-        public final float[] floatValues;
-        public final int[] intValues;
-        CarSensorEventMock(int sensorType, Object values) {
-            this.sensorType = sensorType;
-            if (values instanceof float[]) {
-                this.floatValues = (float[]) values;
-                this.intValues = new int[0];
-            } else {
-                this.floatValues = new float[0];
-                this.intValues = (int[]) values;
-            }
-        }
-    }
-
-    // ========== 生命周期 ==========
-
-    @Override protected void onStart() { super.onStart(); bootLog("[生命周期] onStart"); }
-    @Override protected void onResume() { super.onResume(); bootLog("[生命周期] onResume"); }
-    @Override protected void onPause() { super.onPause(); bootLog("[生命周期] onPause"); }
-    @Override protected void onStop() { super.onStop(); bootLog("[生命周期] onStop"); }
-
-    @Override
-    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
-        super.onConfigurationChanged(newConfig);
-        bootLog("[UI] onConfigurationChanged — 重新布局");
-        // 不 setContentView：全屏↔分屏切换时 reapply 布局即可，setContentView 会导致黑屏崩溃
-        applyFontScale();
-        safeLoadCarImage();
-        clearShadow(findViewById(R.id.root));
-        scaleBannerByHeight();
-        scaleAcCardByHeight();
-        layoutCarTags();
-        refreshDisplay();
-    }
-
-    /** 车机不支持 PiP — 首次失败后永久禁用，避免每次 onPause 无效尝试 */
-    private static boolean pipSupported = true;
-
-    /** 进入画中画模式 */
-    @Override
-    @SuppressWarnings("deprecation")
-    protected void onUserLeaveHint() {
-        super.onUserLeaveHint();
-        if (!pipSupported) return;
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 26 && checkPiPSupported()) {
-                enterPictureInPictureMode();
-                bootLog("[PiP] 进入画中画模式");
-            }
-        } catch (Throwable e) {
-            pipSupported = false;
-            bootLog("[PiP] 进入画中画失败（已禁用）: " + rootCause(e));
-        }
-    }
-
-    /** 画中画模式变化 */
-    @Override
-    public void onPictureInPictureModeChanged(boolean isInPiP, android.content.res.Configuration newConfig) {
-        super.onPictureInPictureModeChanged(isInPiP, newConfig);
-        bootLog("[PiP] " + (isInPiP ? "已进入" : "已退出") + "画中画");
-    }
-
-    /** 检查是否支持画中画 */
-    private boolean checkPiPSupported() {
-        try {
-            if (!getPackageManager().hasSystemFeature("android.software.picture_in_picture"))
-                return false;
-            // 部分车机 hasSystemFeature 返回 true 但实际不支持，
-            // 再检查 ActivityInfo 是否声明了 supportsPictureInPicture
-            android.content.pm.ActivityInfo ai = getPackageManager()
-                    .getActivityInfo(new android.content.ComponentName(getPackageName(), getClass().getName()), 0);
-            // supportsPictureInPicture 属性在 API 24+ 编译，但常量名因 API level 差异用反射取
-            try {
-                java.lang.reflect.Field f = android.content.pm.ActivityInfo.class.getField("supportsPictureInPicture");
-                return f.getBoolean(ai);
-            } catch (NoSuchFieldException nsf) {
-                // 退而求其次：FLAG_SUPPORTS_PICTURE_IN_PICTURE 不存在时，信任 hasSystemFeature
-                return true;
-            }
-        } catch (Throwable e) {
-            return false;
-        }
-    }
-
-    /** 安全加载车图：用 inSampleSize 降采样，防 density 缩放后 bitmap 过大崩溃。
-     *  车图按日夜模式自动切换：夜间 car_top.webp / 白天 car_top_day.webp（资源别名 car_top_sel） */
     private void safeLoadCarImage() {
         if (ivCar == null) return;
         try {
-            int carRes = R.drawable.car_top_sel;   // 日夜资源别名，values/values-notnight 各自指向
-            // 先量原图边界
+            int carRes = R.drawable.car_top_sel;
             android.graphics.BitmapFactory.Options opt = new android.graphics.BitmapFactory.Options();
             opt.inJustDecodeBounds = true;
             android.graphics.BitmapFactory.decodeResource(getResources(), carRes, opt);
             int bw = opt.outWidth, bh = opt.outHeight;
-            bootLog("[UI] 车图原始: " + bw + "x" + bh);
 
-            // Canvas 最大 bitmap 约 100MB（保守取 80MB → 2000万像素）
-            // 算需要降采样到多少
             DisplayMetrics dm = getResources().getDisplayMetrics();
             float density = dm.density;
-            int scaledW = Math.round(bw * density);
-            int scaledH = Math.round(bh * density);
-            long bitmapBytes = (long) scaledW * scaledH * 4;
-            bootLog("[UI] 车图 density=" + density + " 缩放后=" + scaledW + "x" + scaledH + "=" + (bitmapBytes / 1048576) + "MB");
-
             int sampleSize = 1;
             while ((long)(bw / sampleSize) * (bh / sampleSize) * 4 * (long)(density) * (long)(density) > 80L * 1024 * 1024) {
                 sampleSize *= 2;
             }
-            if (sampleSize > 1) {
-                bootLog("[UI] 车图降采样 sampleSize=" + sampleSize);
-            }
 
-            // 加载降采样后的 bitmap
             opt = new android.graphics.BitmapFactory.Options();
             opt.inSampleSize = sampleSize;
-            opt.inScaled = false;  // 不按 density 缩放
+            opt.inScaled = false;
             android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeResource(
                     getResources(), carRes, opt);
             if (bmp != null) {
                 ivCar.setImageBitmap(bmp);
-                bootLog("[UI] 车图加载完成: " + bmp.getWidth() + "x" + bmp.getHeight());
             }
         } catch (Throwable e) {
-            bootLog("[UI] 车图安全加载失败: " + rootCause(e));
+            Log.w(TAG, "[UI] 车图安全加载失败: " + e);
         }
     }
 
-    /** UI 初始化：findViewById + 字号缩放 + 标签定位（仅 onCreate 调用） */
-    private void initUi() {
-        tvGear = findViewById(R.id.tvGear);
-        tvRange = findViewById(R.id.tvRange);
-        tvOdo = findViewById(R.id.tvOdo);
-        tvOil = findViewById(R.id.tvOil);
-        tvFuel = findViewById(R.id.tvFuel);
-        tvSpeed = findViewById(R.id.tvSpeed);
-        tvRangeUnit = findViewById(R.id.tvRangeUnit);
-        tvOdoUnit = findViewById(R.id.tvOdoUnit);
-        tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
-        tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
-        tvTempDriver = findViewById(R.id.tvTempDriver);
-        tvPm = findViewById(R.id.tvPm);
-        tvTempPassenger = findViewById(R.id.tvTempPassenger);
-        tagLFDw = findViewById(R.id.tagLFDw); tagRFDw = findViewById(R.id.tagRFDw);
-        tagLRDw = findViewById(R.id.tagLRDw); tagRRDw = findViewById(R.id.tagRRDw);
-        tagLFTire = findViewById(R.id.tagLFTire); tagRFTire = findViewById(R.id.tagRFTire);
-        tagLRTire = findViewById(R.id.tagLRTire); tagRRTire = findViewById(R.id.tagRRTire);
-        tagTrunk = findViewById(R.id.tagTrunk);
-        ivCar = findViewById(R.id.ivCar);
-        carZone = findViewById(R.id.carZone);
-        tagLines = findViewById(R.id.tagLines);
-        turnLeft = findViewById(R.id.turnLeft);
-        turnRight = findViewById(R.id.turnRight);
-        hvacToast = findViewById(R.id.hvacToast);
-        // 页面单击切换日夜模式（高德导航广播也可自动切换）；长按切换开机自启
-        View root = findViewById(R.id.root);
-        if (root != null) {
-            root.setOnClickListener(v -> toggleDayNight());
-            root.setOnLongClickListener(v -> {
-                toggleAutoStart();
-                return true;
-            });
-        }
-        // 注册高德导航日夜模式广播（仅 onCreate 注册一次）
-        registerAmapThemeReceiver();
-        // 注册乐酷驾驶车况查询接收器（同随高德接收器注册/注销）
-        registerVehicleQueryReceiver();
-        safeLoadCarImage();
-        applyFontScale();
-        // 清除 XML 布局中写死的文字光晕（日夜均关闭 shadowColor/shadowRadius）
-        clearShadow(findViewById(R.id.root));
-        scaleBannerByHeight();
-        scaleAcCardByHeight();
-        layoutCarTags();
-    }
-
-    /** 递归清除所有 TextView 的 shadowLayer（白天模式去光晕） */
-    private void clearShadow(View v) {
-        if (v instanceof TextView) {
-            ((TextView) v).setShadowLayer(0, 0, 0, 0);
-        } else if (v instanceof android.view.ViewGroup) {
-            android.view.ViewGroup g = (android.view.ViewGroup) v;
-            for (int i = 0; i < g.getChildCount(); i++) clearShadow(g.getChildAt(i));
-        }
-    }
-
-    @Override
-    protected void onDestroy() {
-        bootLog("[生命周期] onDestroy — 写最终快照");
-        try { logToFile(buildDataSnapshot(), true); } catch (Throwable ignored) {}
-        if (carHandler != null) carHandler.removeCallbacksAndMessages(null);
-        if (sensorManager != null && sensorListener != null) {
-            try {
-                Class<?> listenerClass = Class.forName(
-                        "android.car.hardware.CarSensorManager$OnSensorChangedListener");
-                Method unregister = sensorManager.getClass()
-                        .getMethod("unregisterListener", listenerClass);
-                unregister.invoke(sensorManager, sensorListener);
-                bootLog("[onDestroy] sensorListener 已注销");
-            } catch (Throwable e) {
-                bootLog("[onDestroy] 注销 listener 失败: " + e);
-            }
-        }
-        if (vendorManager != null && vendorCallback != null) {
-            try {
-                vendorManager.getClass().getMethod("unregisterCallback",
-                        Class.forName("android.car.hardware.CarVendorExtensionManager$CarVendorExtensionCallback"))
-                        .invoke(vendorManager, vendorCallback);
-                bootLog("[onDestroy] vendorCallback 已注销");
-            } catch (Throwable e) {
-                bootLog("[onDestroy] 注销 vendorCallback 失败: " + e);
-            }
-        }
-        if (yfManager != null && yfCallback != null) {
-            try {
-                yfManager.getClass().getMethod("unregisterCallback",
-                        Class.forName("android.car.hardware.CarYFSettingManager$CarYFSettingCallback"))
-                        .invoke(yfManager, yfCallback);
-                bootLog("[onDestroy] yfCallback 已注销");
-            } catch (Throwable e) {
-                bootLog("[onDestroy] 注销 yfCallback 失败: " + e);
-            }
-        }
-        if (hvacManager != null && hvacCallback != null) {
-            try {
-                hvacManager.getClass().getMethod("unregisterCallback",
-                        Class.forName("android.car.hardware.hvac.CarHvacManager$CarHvacEventCallback"))
-                        .invoke(hvacManager, hvacCallback);
-                bootLog("[onDestroy] hvacCallback 已注销");
-            } catch (Throwable e) {
-                bootLog("[onDestroy] 注销 hvacCallback 失败: " + e);
-            }
-        }
-        if (car != null) {
-            try { car.getClass().getMethod("disconnect").invoke(car); bootLog("[onDestroy] Car 已断开"); } catch (Throwable ignored) {}
-        }
-        unregisterAmapThemeReceiver();
-        super.onDestroy();
-    }
-    // ========== 设备信息 & API 探测 ==========
-
-    private void logDeviceInfo() {
-        try {
-            bootLog("[设备] PID=" + android.os.Process.myPid() + " UID=" + android.os.Process.myUid()
-                    + " (UID=1000 表示系统签名生效)");
-            bootLog("[设备] " + Build.MANUFACTURER + " " + Build.MODEL
-                    + " (" + Build.DEVICE + ") Android " + Build.VERSION.RELEASE
-                    + " API " + Build.VERSION.SDK_INT);
-            bootLog("[设备] FINGERPRINT=" + Build.FINGERPRINT);
-            DisplayMetrics dm = new DisplayMetrics();
-            getWindowManager().getDefaultDisplay().getRealMetrics(dm);
-            bootLog("[设备] 屏幕 " + dm.widthPixels + "x" + dm.heightPixels + " density=" + dm.densityDpi);
-        } catch (Throwable e) {
-            bootLog("[设备] 信息读取失败: " + e);
-        }
-    }
-
-    /** 探测车机 android.car 各关键类是否存在，一次看清车机支持情况 */
-    private void probeCarApiClasses() {
-        bootLog("[探测] ==== Car API 类探测 ====");
-        String[] classes = {
-                "android.car.Car",
-                "android.car.Car$CarServiceLifecycleListener",   // 新版 createCar (Android 10+)
-                "android.car.Car$ServiceConnectionListener",    // 老版 createCar (Android 8/9)
-                "android.car.hardware.CarSensorManager",
-                "android.car.hardware.CarSensorManager$OnSensorChangedListener",
-                "android.car.hardware.CarSensorEvent",
-                "android.car.hardware.CarVendorExtensionManager",
-                "android.car.CarInfoManager",
-                "android.car.hardware.property.CarPropertyManager",
-        };
-        for (String name : classes) {
-            boolean exists;
-            try {
-                Class.forName(name);
-                exists = true;
-            } catch (Throwable e) {
-                exists = false;
-            }
-            bootLog("[探测] " + (exists ? "有" : "无") + " " + name);
-        }
-    }
-
-    private boolean isCarApiAvailable() {
-        try {
-            Class.forName("android.car.Car");
-            return true;
-        } catch (Throwable e) {
-            return false;
-        }
-    }
-
-    // ========== Car 连接（照抄 CarLauncher dw.java：3参数 createCar + connect()）==========
-
-    /**
-     * 车机是 Android 8.1 定制 Car API：createCar(Context, ServiceConnection, Handler) + 手动 connect()。
-     * ServiceConnection 是 Android 标准接口，直接实现，不用反射。
-     */
-    private void connectCarService() {
-        setStatus("正在连接 Car Service...");
-        bootLog("[连接] connectCarService 开始（3参数版 + connect()）");
-
-        HandlerThread thread = new HandlerThread("CarConnection");
-        thread.start();
-        carHandler = new Handler(thread.getLooper()) {
-            @Override
-            public void handleMessage(android.os.Message msg) {
-                switch (msg.what) {
-                    case MSG_TRY_CONNECT:
-                        if (!serviceConnected) tryCreateCar();
-                        break;
-                    case MSG_CHECK_CONNECTED:
-                        checkCarConnected();
-                        break;
-                    case MSG_DISCONNECTED:
-                        tryConnectCount = 0;
-                        bootLog("[连接] Car Service 断开");
-                        ui("Car Service 断开");
-                        break;
-                }
-            }
-        };
-
-        ServiceConnection conn = new ServiceConnection() {
-            @Override
-            public void onServiceConnected(ComponentName name, IBinder service) {
-                serviceConnected = true;
-                long delay = isConnected() ? 500 : 1000;
-                bootLog("[回调] onServiceConnected, " + delay + "ms 后检查连接");
-                carHandler.sendEmptyMessageDelayed(MSG_CHECK_CONNECTED, delay);
-            }
-
-            @Override
-            public void onServiceDisconnected(ComponentName name) {
-                serviceConnected = false;
-                carHandler.sendEmptyMessage(MSG_DISCONNECTED);
-            }
-
-            @Override
-            public void onBindingDied(ComponentName name) {
-                serviceConnected = false;
-                carHandler.sendEmptyMessage(MSG_DISCONNECTED);
-            }
-        };
-
-        try {
-            Class<?> carClass = Class.forName("android.car.Car");
-            Method createCar = carClass.getMethod("createCar",
-                    android.content.Context.class, ServiceConnection.class, Handler.class);
-            car = createCar.invoke(null, this, conn, carHandler);
-            bootLog("[连接] createCar 返回: " + (car != null ? "非null" : "null"));
-            if (car == null) {
-                ui("createCar 返回 null");
-                setStatus("连接失败");
-                return;
-            }
-            // 手动 connect（照抄 CarLauncher）
-            car.getClass().getMethod("connect").invoke(car);
-            bootLog("[连接] connect() 已调用，等待 onServiceConnected...");
-        } catch (Throwable e) {
-            bootLog("[连接] createCar/connect 异常:\n" + stackTrace(e));
-            ui("连接异常: " + rootCause(e));
-            setStatus("连接失败");
-        }
-    }
-
-    /** 检查 isConnected，最多重试 3 次（照抄 CarLauncher dz.java） */
-    private void checkCarConnected() {
-        try {
-            boolean connected = isConnected();
-            bootLog("[连接] 检查 isConnected=" + connected + ", 重试次数=" + tryConnectCount);
-            if (connected) {
-                onCarServiceReady();
-            } else if (tryConnectCount <= 3) {
-                tryConnectCount++;
-                carHandler.sendEmptyMessageDelayed(MSG_CHECK_CONNECTED, 500);
-            } else {
-                ui("连接超时（isConnected 一直 false）");
-                setStatus("连接失败");
-            }
-        } catch (Throwable e) {
-            bootLog("[连接] checkCarConnected 异常: " + e);
-        }
-    }
-
-    private boolean isConnected() {
-        if (car == null) return false;
-        try {
-            Object r = car.getClass().getMethod("isConnected").invoke(car);
-            return r instanceof Boolean && (Boolean) r;
-        } catch (Throwable e) {
-            return false;
-        }
-    }
-
-    private void tryCreateCar() {
-        bootLog("[连接] tryCreateCar（备用重连路径）");
-        try {
-            Class<?> carClass = Class.forName("android.car.Car");
-            Method createCar = carClass.getMethod("createCar",
-                    android.content.Context.class, ServiceConnection.class, Handler.class);
-            car = createCar.invoke(null, this, (ServiceConnection) null, carHandler);
-            if (car != null) car.getClass().getMethod("connect").invoke(car);
-        } catch (Throwable e) {
-            bootLog("[连接] tryCreateCar 异常: " + rootCause(e));
-        }
-    }
-
-    // ========== Car Service 就绪 ==========
-
-    private void onCarServiceReady() {
-        bootLog("[就绪] onCarServiceReady 开始");
-        Class<?> carClass;
-        Method getCarManager;
-        try {
-            carClass = Class.forName("android.car.Car");
-            getCarManager = carClass.getMethod("getCarManager", String.class);
-        } catch (Throwable e) {
-            bootLog("[就绪] 反射 getCarManager 失败:\n" + stackTrace(e));
-            return;
-        }
-
-        // 照抄 CarLauncher dw.java g()：字符串服务名
-        // sensor / vendor_extension / info / hvac / vendor_yfsetting / phev_extension
-        sensorManager = getManagerQuietly(getCarManager, "sensor", "CarSensorManager");
-        vendorManager = getManagerQuietly(getCarManager, "vendor_extension", "VendorExtension");
-        infoManager = getManagerQuietly(getCarManager, "info", "CarInfoManager");
-        hvacManager = getManagerQuietly(getCarManager, "hvac", "CarHvacManager");
-        yfManager = getManagerQuietly(getCarManager, "vendor_yfsetting", "CarYFSettingManager");
-
-        setStatus("Car Service 就绪");
-
-        if (sensorManager != null) registerSensors();
-        else ui("CarSensorManager 不可用");
-
-        if (vendorManager != null) {
-            registerVendorCallback();
-            readTireData();
-            // 延迟重试：首次读取可能 TPMS 未就绪，5 秒后检查是否四轮都有数据，没有则重读
-            handler.postDelayed(() -> {
-                if (tireData.size() < TIRE_AREAS.length) {
-                    tireLog("[胎压] 首次读取不完整（" + tireData.size() + "/4），5秒后重试");
-                    readTireData();
-                }
-            }, 5000L);
-        } else ui("VendorExtension 不可用（胎压需此 Manager）");
-
-        if (infoManager != null) readCarInfo();
-        else ui("CarInfoManager 不可用");
-
-        if (hvacManager != null) readHvacCcm();
-        else {
-            // 无 HVAC Manager 时也恢复温度记忆
-            restoreHvacTempFromSP();
-            ui("CarHvacManager 不可用（滤芯状态入参）");
-        }
-
-        if (yfManager != null) readAarData();
-        else ui("CarYFSettingManager 不可用（智能新风/滤芯/车窗）");
-
-        refreshDisplay();
-        bootLog("[就绪] onCarServiceReady 完成");
-
-        // 连接成功 30 秒后无条件写一次快照：没推送也能从 carinfo.log 判断出注册/数据状态
-        final String snapshotText = buildDataSnapshot();
-        final String snapshotHeader = "[连接30秒快照] 已注册=" + registeredSensors.size()
-                + " 收到过数据的传感器=" + firstDataLogged.size() + "个"
-                + (firstDataLogged.isEmpty() ? "（无任何推送→注册或权限问题）" : "")
-                + (writeFailReason != null ? " 日志写入失败=" + writeFailReason : "");
-        handler.postDelayed(() -> {
-            try { logToFile(snapshotHeader + "\n" + snapshotText, true); } catch (Throwable ignored) {}
-        }, 30000);
-    }
-
-    private Object getManagerQuietly(Method getCarManager, String serviceName, String label) {
-        try {
-            Object mgr = getCarManager.invoke(car, serviceName);
-            bootLog("[就绪] " + label + " 获取" + (mgr != null ? "成功 (" + mgr.getClass().getName() + ")" : "返回null"));
-            return mgr;
-        } catch (Throwable e) {
-            bootLog("[就绪] " + label + " 获取失败:\n" + stackTrace(e));
-            return null;
-        }
-    }
-
-    // ========== 传感器 ==========
-
-    private void registerSensors() {
-        bootLog("[传感器] 开始注册");
-        try {
-            Class<?> listenerClass = Class.forName(
-                    "android.car.hardware.CarSensorManager$OnSensorChangedListener");
-            sensorListener = Proxy.newProxyInstance(
-                    listenerClass.getClassLoader(),
-                    new Class<?>[]{listenerClass},
-                    (proxy, method, args) -> {
-                        // registerListener 内部会调 hashCode()/equals() 存集合，
-                        // 基本类型返回 null 会拆箱炸 NPE（18:56 车机 43 个全失败的根因）
-                        String m = method.getName();
-                        if ("hashCode".equals(m)) return System.identityHashCode(proxy);
-                        if ("equals".equals(m)) return proxy == args[0];
-                        if ("toString".equals(m)) return "SensorListenerProxy@" + Integer.toHexString(System.identityHashCode(proxy));
-                        if ("onSensorChanged".equals(m)) {
-                            cacheSensorEvent(args[0]);
-                            refreshDisplay();
-                        }
-                        Class<?> rt = method.getReturnType();
-                        if (rt == boolean.class) return Boolean.FALSE;
-                        if (rt == int.class) return 0;
-                        if (rt == long.class) return 0L;
-                        if (rt == float.class) return 0f;
-                        if (rt == double.class) return 0d;
-                        return null;
-                    });
-
-            // 1) 动态枚举车机支持的传感器（getSupportedSensors）——车机只认厂商小数字 ID，
-            //    19:58 实测标准 PROPERTY_ID 大数字全部 invalid sensor type，不再合并硬编码大数字
-            int[] supported = null;
-            try {
-                Method getSupported = sensorManager.getClass().getMethod("getSupportedSensors");
-                supported = (int[]) getSupported.invoke(sensorManager);
-                if (supported != null) {
-                    bootLog("[传感器] 车机报告支持 " + supported.length + " 个传感器:");
-                    for (int t : supported) {
-                        bootLog("[传感器]   支持 type=" + t + " (" + sensorName(t) + ")");
-                        registeredSensors.add(t);
-                    }
-                }
-            } catch (Throwable e) {
-                bootLog("[传感器] getSupportedSensors 失败: " + rootCause(e));
-            }
-
-            // 2) 硬编码补充：旧版车机可能枚举不到但实际可注册的（19:58 实测 31 个全部枚举到，仅作兆底）
-            int[] hardcoded = {
-                    SENSOR_ODOMETER, SENSOR_SPEED, SENSOR_GEAR, SENSOR_IGNITION,
-                    SENSOR_FUEL_WARNING, SENSOR_RANGE, SENSOR_FUEL_PCT,
-                    SENSOR_DOOR_LB, SENSOR_DOOR_RB, SENSOR_DOOR_LR, SENSOR_DOOR_RR,
-                    SENSOR_TRUNK_IN, SENSOR_DOOR_TRUNK_OUT
-            };
-            for (int t : hardcoded) registeredSensors.add(t);
-            bootLog("[传感器] 合并硬编码清单后共 " + registeredSensors.size() + " 个待注册");
-
-            // 3) 逐个注册并读当前值
-            // 反射参数必须显式装箱 Integer：车机老版方法签名收 Integer，
-            // invoke 传 int 字面量会因拆箱 null 拋 NPE（18:56 车机实测 43 个全失败的原因）
-            Method register = sensorManager.getClass()
-                    .getMethod("registerListener", listenerClass, int.class, int.class);
-            Method getLatest = sensorManager.getClass()
-                    .getMethod("getLatestSensorEvent", int.class);
-
-            int ok = 0, latestOk = 0;
-            String firstFailReason = null;
-            for (int type : registeredSensors) {
-                String name = sensorName(type);
-                try {
-                    Object regResult = register.invoke(sensorManager, sensorListener,
-                            type, Integer.valueOf(1)); // RATE_NORMAL，显式装箱
-                    ok++;
-                    Object ev = getLatest.invoke(sensorManager, type);
-                    if (ev != null) {
-                        cacheSensorEvent(ev);
-                        latestOk++;
-                        bootLog("[传感器] " + name + "(" + type + ") 注册OK 返回=" + regResult
-                                + ", 当前值=" + eventSummary(ev));
-                    } else {
-                        bootLog("[传感器] " + name + "(" + type + ") 注册OK 返回=" + regResult + ", 当前无数据(等推送)");
-                    }
-                } catch (Throwable e) {
-                    String reason = rootCause(e);
-                    if (firstFailReason == null) firstFailReason = name + "(" + type + "): " + reason;
-                    bootLog("[传感器] " + name + "(" + type + ") 注册失败: " + reason);
-                }
-            }
-            bootLog("[传感器] 注册完成: 成功" + ok + "/" + registeredSensors.size()
-                    + ", 有当前值" + latestOk + "/" + registeredSensors.size());
-            ui("已注册 " + ok + "/" + registeredSensors.size() + " 个传感器");
-            if (ok == 0 && firstFailReason != null) {
-                ui("首个失败原因: " + firstFailReason);
-            }
-        } catch (Throwable e) {
-            bootLog("[传感器] 注册流程异常:\n" + stackTrace(e));
-            ui("传感器注册失败: " + e.getMessage());
-        }
-    }
-
-    // 未知传感器编号 → 日志里给出推测标签（CarLauncher 未提及，待车机数据验证）
-    private static final HashMap<Integer, String> SENSOR_GUESS = new HashMap<>();
-    static {
-        SENSOR_GUESS.put(5,  "可能:行驶方向?");
-        SENSOR_GUESS.put(9,  "未知9(全程=1,待验证)");
-        SENSOR_GUESS.put(11, "挡位结合(0=P/31=行驶)");
-        SENSOR_GUESS.put(52, "驻车驱动(待重验:拉手刹无变化)");
-        SENSOR_GUESS.put(63, "非大灯(开关无反应)");
-        SENSOR_GUESS.put(67, "电源档位(12=ON/0=OFF)");
-        SENSOR_GUESS.put(68, "左转向灯(3=亮/1=灭/0=关)");
-        SENSOR_GUESS.put(69, "右转向灯(3=亮/1=灭/0=关)");
-        SENSOR_GUESS.put(72, "点火电源位(1=ON/0=LOCK)");
-    }
-
-    private static String sensorName(int type) {
-        String n = SENSOR_NAMES.get(type);
-        if (n != null) return n;
-        String g = SENSOR_GUESS.get(type);
-        return g != null ? "未知" + type + "(" + g + ")" : "未知" + type;
-    }
-
-    /** 首次收到某类型数据时，把完整内容记录到日志；监控参数值变化时也记录 */
-    private void cacheSensorEvent(Object ev) {
-        if (ev == null) return;
-        try {
-            java.lang.reflect.Field typeField = ev.getClass().getField("sensorType");
-            int type = typeField.getInt(ev);
-            String summary = eventSummary(ev);
-            if (firstDataLogged.add(type)) {
-                bootLog("[数据] 首次收到 sensor type=" + type + ": " + summary);
-            }
-            // 监控参数值变化检测（排除车速type=2/总里程type=4等高频或极慢变化）
-            if (MONITORED_TYPES.contains(type)) {
-                String old = lastSensorValue.get(type);
-                if (old == null || !old.equals(summary)) {
-                    if (old != null) {  // 首次已有"首次收到"日志，跳过；仅记录后续变化
-                        bootLog("[传感器] " + sensorName(type) + "(" + type + ") 变化: " + old + " → " + summary);
-                    }
-                    lastSensorValue.put(type, summary);
-                }
-            }
-            switch (type) {
-                case SENSOR_ODOMETER: evOdometer = ev; break;
-                case SENSOR_SPEED: evSpeed = ev; break;
-                case SENSOR_GEAR: evGear = ev; break;              // 挡位！（er.java: getGearData）
-                case SENSOR_RANGE: evRange = ev; break;             // 续航 km（eo.java: leftMile）
-                case SENSOR_FUEL_PCT: evFuelPct = ev; break;       // 油量百分比（ep.java）
-                case SENSOR_FUEL_WARNING: evFuelWarn = ev; break;   // 油量预警开关（eq.java）
-                case SENSOR_IGNITION: evIgnition = ev; break;
-                case SENSOR_OIL_LIFE: evOilLife = ev; break;        // 机油寿命%（实锤）
-                case SENSOR_DOOR_LB: evDoorLB = ev; break;
-                case SENSOR_DOOR_RB: evDoorRB = ev; break;
-                case SENSOR_DOOR_LR: evDoorLR = ev; break;
-                case SENSOR_DOOR_RR: evDoorRR = ev; break;
-                case SENSOR_TRUNK_IN: evTrunkIn = ev; break;
-                case SENSOR_DOOR_TRUNK_OUT: evTrunkOut = ev; break;
-                case SENSOR_TURN_LEFT: evTurnLeft = ev; break;
-                case SENSOR_TURN_RIGHT: evTurnRight = ev; break;
-                default: evOthers.put(type, ev); break;  // 未知/其余传感器
-            }
-        } catch (Throwable ignored) {}
-    }
-
-    /** 把 CarSensorEvent 的 floatValues/intValues 拼成可读文本 */
-    private String eventSummary(Object ev) {
-        try {
-            StringBuilder sb = new StringBuilder();
-            java.lang.reflect.Field ff = ev.getClass().getField("floatValues");
-            float[] farr = (float[]) ff.get(ev);
-            if (farr != null && farr.length > 0) {
-                sb.append("float=[");
-                for (float v : farr) sb.append(v).append(",");
-                sb.append("] ");
-            }
-            java.lang.reflect.Field fi = ev.getClass().getField("intValues");
-            int[] iarr = (int[]) fi.get(ev);
-            if (iarr != null && iarr.length > 0) {
-                sb.append("int=[");
-                for (int v : iarr) sb.append(v).append(",");
-                sb.append("]");
-            }
-            return sb.toString().trim();
-        } catch (Throwable e) {
-            return "(无法解析: " + e.getClass().getSimpleName() + ")";
-        }
-    }
-
-    private float getFloat(Object ev) {
-        if (ev == null) return -1f;
-        try {
-            java.lang.reflect.Field f = ev.getClass().getField("floatValues");
-            float[] arr = (float[]) f.get(ev);
-            if (arr != null && arr.length > 0) return arr[0];
-        } catch (Throwable ignored) {}
-        return -1f;
-    }
-
-    private int getInt(Object ev) {
-        if (ev == null) return -1;
-        try {
-            java.lang.reflect.Field f = ev.getClass().getField("intValues");
-            int[] arr = (int[]) f.get(ev);
-            if (arr != null && arr.length > 0) return arr[0];
-        } catch (Throwable ignored) {}
-        return -1;
-    }
-
-    // ========== 胎压 + 里程单位（百度定制 VendorExtension）==========
-
-    /**
-     * 注册 VendorExtension 回调（照抄 CarLauncher ek.java + eh.java）。
-     * 监听胎压状态(0x27400412)和压力值(0x27600410)变化，ECU 推送时自动重读四轮。
-     * 不注册回调则只能在启动时读一次，TPMS 未就绪则永久读不到。
-     */
-    private void registerVendorCallback() {
-        try {
-            Class<?> cbClass = Class.forName(
-                    "android.car.hardware.CarVendorExtensionManager$CarVendorExtensionCallback");
-            vendorCallback = Proxy.newProxyInstance(cbClass.getClassLoader(),
-                    new Class<?>[]{cbClass},
-                    (proxy, method, args) -> {
-                        String m = method.getName();
-                        if ("hashCode".equals(m)) return System.identityHashCode(proxy);
-                        if ("equals".equals(m)) return proxy == args[0];
-                        if ("toString".equals(m)) return "VendorCallbackProxy";
-                        if ("onChangeEvent".equals(m) && args != null && args.length > 0) {
-                            handleVendorEvent(args[0]);
-                        }
-                        if ("onErrorEvent".equals(m) && args != null && args.length >= 2) {
-                            tireLog("[胎压] VendorExtension onErrorEvent propId=" + args[0] + " areaId=" + args[1] + "（订阅异常）");
-                        }
-                        Class<?> rt = method.getReturnType();
-                        if (rt == boolean.class) return Boolean.FALSE;
-                        if (rt == int.class) return 0;
-                        if (rt == long.class) return 0L;
-                        if (rt == float.class) return 0f;
-                        if (rt == double.class) return 0d;
-                        return null;
-                    });
-            Method register = vendorManager.getClass().getMethod("registerCallback", cbClass);
-            register.invoke(vendorManager, vendorCallback);
-            tireLog("[胎压] VendorExtension 回调注册OK");
-        } catch (Throwable e) {
-            bootLog("[胎压] VendorExtension 回调注册失败: " + rootCause(e));
-        }
-    }
-
-    /** VendorExtension 属性变化回调：胎压状态/压力值变化时重读四轮（照抄 ek.java + eh.a(CarPropertyValue)）
-     *  所有到达的 propId 都写文件留痕（区分"推送根本没来"vs"推送来了但处理没成"） */
-    private void handleVendorEvent(Object carPropertyValue) {
-        try {
-            // 提取 propertyId
-            Method getPropId = carPropertyValue.getClass().getMethod("getPropertyId");
-            int propId = (Integer) getPropId.invoke(carPropertyValue);
-            // 只关心胎压相关属性（ek.java: 0x27400412 状态 / 0x27600410 压力）
-            if (propId == PROP_TIRE_STATE || propId == PROP_TIRE_PRESSURE) {
-                tireLog("[胎压] 收到推送 propId=0x" + Integer.toHexString(propId) + "，重读四轮");
-                handler.post(() -> readTireData());
-            } else if (propId == PROP_MILEAGE_UNIT) {
-                // ek.java：里程单位推送，0=km 1=mi，动态更新续航/总里程单位
-                Object v = carPropertyValue.getClass().getMethod("getValue").invoke(carPropertyValue);
-                mileageUnit = Integer.valueOf(1).equals(v) ? "mi" : "km";
-                tireLog("[胎压] 里程单位推送 propId=557843475 → " + mileageUnit);
-                refreshDisplay();
-            } else {
-                tireLog("[胎压] 其他推送 propId=" + propId + "（0x" + Integer.toHexString(propId) + "），忽略");
-            }
-        } catch (Throwable e) {
-            tireLog("[胎压] VendorExtension 回调处理失败: " + rootCause(e));
-        }
-    }
-
-    private void readTireData() {
-        tireLog("[胎压] ==== 读取胎压（VendorExtension）====");
-        ui("读取胎压中...");
-        Method getProperty;
-        try {
-            getProperty = vendorManager.getClass()
-                    .getMethod("getProperty", Class.class, int.class, int.class);
-            tireLog("[胎压] getProperty 方法获取OK");
-        } catch (Throwable e) {
-            tireLog("[胎压] getProperty 方法不存在:\n" + stackTrace(e));
-            ui("胎压 API 不可用");
-            return;
-        }
-        String[] labels = {"左前", "右前", "左后", "右后"};
-        for (int i = 0; i < TIRE_AREAS.length; i++) {
-            int area = TIRE_AREAS[i];
-            try {
-                int state = (Integer) getProperty.invoke(vendorManager, Integer.class, PROP_TIRE_STATE, area);
-                float pressure = (Float) getProperty.invoke(vendorManager, Float.class, PROP_TIRE_PRESSURE, area);
-                float temp = (Float) getProperty.invoke(vendorManager, Float.class, PROP_TIRE_TEMP, area);
-                tireData.put(area, new TireData(state, pressure, temp));
-                tireLog("[胎压] " + labels[i] + " state=" + state + " pressure=" + pressure + " temp=" + temp);
-                ui("胎压 " + labels[i] + " " + pressure + "kPa");
-            } catch (Throwable e) {
-                tireLog("[胎压] " + labels[i] + " 读取失败: " + rootCause(e));
-                ui("胎压 " + labels[i] + " 失败");
-            }
-        }
-        // 里程单位（照抄 CarLauncher ej.java）：0=km 1=mi，用于总里程/续航显示
-        try {
-            Object unit = getProperty.invoke(vendorManager, Integer.class, PROP_MILEAGE_UNIT, 0);
-            tireLog("[车况] 里程单位(557843475)=" + unit);
-            mileageUnit = Integer.valueOf(1).equals(unit) ? "mi" : "km";
-            ui("里程单位: " + mileageUnit);
-        } catch (Throwable e) {
-            tireLog("[车况] 里程单位读取失败: " + rootCause(e));
-        }
-        // 修 BUG：推送触发的重读只更新了 tireData 缓存，从没调 refreshDisplay()，
-        // 屏幕轮胎圈永远停在首屏值——这就是"胎压只更新一次"的直接原因（启动首屏靠 onCarServiceReady 末尾那次刷新）
-        tireLog("[胎压] 刷新 UI（四轮=" + tireData.size() + "/4）");
-        refreshDisplay();
-        // 胎压单位请求改在 readAarData() 中完成（服务名 vendor_yfsetting，dw.java:104）
-    }
-
-    // ========== 智能新风 / AAR（照抄 CarLauncher dn.java 状态机） ==========
-
-    /** HVAC 全属性枚举直读：
-     *  1) getPropertyList() 枚举车机支持的全部 HVAC 属性（含温度/风量，8.1 API）
-     *  2) 每个 propId 的每个 areaId 各读一次 getIntProperty（读不出的记失败原因）
-     *  3) 保留 16387 区 8 = CCM 功率读取（dn.java: this.r = eb.a().c()，滤芯状态机入参 r） */
-    private void readHvacCcm() {
-        bootLog("[HVAC] ==== 枚举 HVAC 属性（getPropertyList）====");
-
-        // 1) 枚举属性清单：先试 getPropertyList，同时兼容老版可能的方法名（ getPropertyConfigs/ getHvacPropertiesList）
-        java.util.List<?> cfgList = null;
-        String[] listMethodNames = {"getPropertyList", "getPropertyConfigs", "getHvacPropertiesList", "getProperties"};
-        for (String mn : listMethodNames) {
-            try {
-                Method getList = hvacManager.getClass().getMethod(mn);
-                Object list = getList.invoke(hvacManager);
-                bootLog("[HVAC] " + mn + "() 返回 " + (list == null ? "null" : list.getClass().getName()));
-                if (list instanceof java.util.List && !((java.util.List<?>) list).isEmpty()) {
-                    cfgList = (java.util.List<?>) list;
-                    break;
-                }
-            } catch (Throwable e) {
-                bootLog("[HVAC] " + mn + " 不存在或失败: " + rootCause(e));
-            }
-        }
-
-        // 2) 逐个 config 解析：方法名/字段名多重兼容 + 首个失败时 dump 类结构
-        if (cfgList != null) {
-            int idx = 0, parsed = 0;
-            for (Object cfg : cfgList) {
-                idx++;
-                Integer propId = extractHvacPropId(cfg, idx == 1);
-                if (propId == null) continue;
-                parsed++;
-                String areaStr = extractHvacAreas(cfg);
-                hvacProps.put(propId, areaStr);
-                bootLog("[HVAC] 属性 propId=" + propId + " (" + hvacPropName(propId) + ") areas=[" + areaStr + "]");
-            }
-            ui("HVAC 枚举到 " + parsed + "/" + idx + " 个属性");
-
-            // 3) 逐属性逐区域读当前值（读到 0 续试 Float；读到的写缓存，与推送路径格式统一）
-            for (HashMap.Entry<Integer, String> entry : hvacProps.entrySet()) {
-                int propId = entry.getKey();
-                String[] areaStrs = entry.getValue().split(" ");
-                for (String as : areaStrs) {
-                    int area;
-                    try { area = Integer.parseInt(as.trim()); } catch (NumberFormatException e) { continue; }
-                    Object v = readHvacValue(propId, area);
-                    if (v == null) continue;
-                    String vs = v instanceof Float ? ((Float) v) + "f" : String.valueOf(v);
-                    if (!entry.getValue().contains("=")) {
-                        // config 提取的是纯区域串（无"="），读到首个值后整体替换为"areaN=值"；
-                        // 其余区域值靠推送补齐（车机推送很快），避免多区域拼接出错
-                        hvacProps.put(propId, "area" + area + "=" + vs);
-                    }
-                    bootLog("[HVAC] " + hvacPropName(propId) + " area=" + area + " → " + vs);
-                }
-            }
-
-        // 3.5) 温度记忆：ECU 上电默认32℃不可信，用SP记忆值覆盖
-            restoreHvacTempFromSP();
-        }
-
-        // 4) CCM 功率保底读取（滤芯状态机入参 r，独立于枚举——枚举失败也必须读）
-        //    16387 区 8，CarLauncher eb.c() 实锚；22:37 实测曾有版本读到的就是它
-        try {
-            Method getInt = hvacManager.getClass().getMethod("getIntProperty", int.class, int.class);
-            Object v = getInt.invoke(hvacManager, 16387, 8);
-            aarHvacCcm = v instanceof Integer ? (Integer) v : -1;
-            bootLog("[HVAC] CCM(16387,8)=" + aarHvacCcm + "（保底读取）");
-            if (!hvacProps.containsKey(16387)) hvacProps.put(16387, "area8=" + aarHvacCcm);
-        } catch (Throwable e) {
-            bootLog("[HVAC] CCM 保底读取失败: " + rootCause(e));
-        }
-
-        // 5) 盲扫探测（枚举失败时的温度保险）：已知 ID 表全试一遍 + CarLauncher 实锚小数字 ID 扫段
-        //    读值成功的写进 hvacProps 并记日志——温度/风量 ID 大概率在这里面被扫出来
-        if (hvacProps.isEmpty() || hvacProps.size() < 5) {
-            blindScanHvac();
-        }
-
-        // 6) HVAC 回调注册（推送驱动 UI 刷新，16387 区 8 更新滤芯入参 r）
-        try {
-            Class<?> cbClass = Class.forName("android.car.hardware.hvac.CarHvacManager$CarHvacEventCallback");
-            hvacCallback = Proxy.newProxyInstance(cbClass.getClassLoader(),
-                    new Class<?>[]{cbClass},
-                    (proxy, method, args) -> {
-                        String m = method.getName();
-                        if ("hashCode".equals(m)) return System.identityHashCode(proxy);
-                        if ("equals".equals(m)) return proxy == args[0];
-                        if ("toString".equals(m)) return "HvacCallbackProxy";
-                        if ("onChangeEvent".equals(m) && args != null && args.length > 0) {
-                            handleHvacEvent(args[0]);
-                        }
-                        Class<?> rt = method.getReturnType();
-                        if (rt == boolean.class) return Boolean.FALSE;
-                        if (rt == int.class) return 0;
-                        if (rt == long.class) return 0L;
-                        if (rt == float.class) return 0f;
-                        if (rt == double.class) return 0d;
-                        return null;
-                    });
-            Method register = hvacManager.getClass().getMethod("registerCallback", cbClass);
-            register.invoke(hvacManager, hvacCallback);
-            bootLog("[HVAC] 回调注册OK");
-            // 基线用启动读到的当前值填上：第一次按键就能弹动画（之前要按两次）
-            initHvacToastBaseline();
-            bootLog("[HVAC] 提示基线已初始化 CCM=" + lastCcm + " 风量=" + lastFanLevel
-                    + " AC=" + lastAc + " 内循环=" + lastRecycle);
-        } catch (Throwable e) {
-            bootLog("[HVAC] 回调注册失败: " + rootCause(e));
-        }
-    }
-
-    /** 从 config 对象提取 propId：多方法名兼容（getPropId/getId/getPropertyId…）+ 字段反射兼底 + 首次 dump */
-    private Integer extractHvacPropId(Object cfg, boolean dumpIfFail) {
-        // 多个常见方法名依次试（新版 AOSP 与老版命名都在内）
-        String[] getters = {"getPropId", "getId", "getPropertyId", "getHvacPropId", "getType"};
-        for (String g : getters) {
-            try {
-                Method m = cfg.getClass().getMethod(g);
-                Object v = m.invoke(cfg);
-                if (v instanceof Integer) return (Integer) v;
-            } catch (Throwable ignored) {}
-        }
-        // 字段兼底：propId / mPropId / mId / id 等
-        String[] fields = {"propId", "mPropId", "mId", "id", "mPropertyId", "propertyId"};
-        for (java.lang.reflect.Field f : cfg.getClass().getDeclaredFields()) {
-            for (String fn : fields) {
-                if (f.getName().equals(fn)) {
-                    try {
-                        f.setAccessible(true);
-                        Object v = f.get(cfg);
-                        if (v instanceof Integer) return (Integer) v;
-                    } catch (Throwable ignored) {}
-                }
-            }
-        }
-        if (dumpIfFail) {
-            bootLog("[HVAC] config 类结构 dump:\n" + dumpObjectStructure(cfg));
-        }
-        return null;
-    }
-
-    /** 从 config 提取区域列表（getAreaIdList 多命名兼容 + int[] 字段兼底），失败返回 "0 8" 兜底 */
-    private String extractHvacAreas(Object cfg) {
-        String[] getters = {"getAreaIdList", "getAreaIds", "getAreaList"};
-        for (String g : getters) {
-            try {
-                Method m = cfg.getClass().getMethod(g);
-                Object v = m.invoke(cfg);
-                if (v instanceof int[]) {
-                    StringBuilder as = new StringBuilder();
-                    for (int a : (int[]) v) as.append(a).append(' ');
-                    return as.toString().trim();
-                }
-                if (v instanceof java.util.List) {
-                    StringBuilder as = new StringBuilder();
-                    for (Object a : (java.util.List<?>) v) as.append(a).append(' ');
-                    return as.toString().trim();
-                }
-            } catch (Throwable ignored) {}
-        }
-        // 字段兼底
-        String[] fields = {"mAreaIdList", "areaIdList", "mAreaIds", "areaIds", "mAreaIdsArray"};
-        for (java.lang.reflect.Field f : cfg.getClass().getDeclaredFields()) {
-            for (String fn : fields) {
-                if (f.getName().equals(fn)) {
-                    try {
-                        f.setAccessible(true);
-                        Object v = f.get(cfg);
-                        if (v instanceof int[]) {
-                            StringBuilder as = new StringBuilder();
-                            for (int a : (int[]) v) as.append(a).append(' ');
-                            return as.toString().trim();
-                        }
-                    } catch (Throwable ignored) {}
-                }
-            }
-        }
-        return "0 8"; // 兼底：区 0（全局）和区 8（前排，CarLauncher 常用）各试一次
-    }
-
-    /** 盲扫：枚举彻底失败时，把已知候选 ID 全试一遍（读到的进 hvacProps）
-     *  A. AOSP 标准大数字 ID：HVAC_TEMPERATURE_CURRENT/SET、FAN_SPEED、AC_ON…（javap 实锚）
-     *  B. CarLauncher 实锚小数字：16386~16399 段 + 0~15 段
-     *  C. 每个候选试多个 area（0 全局/8 前排/1 左/4 右——CarLauncher 用 8，胎压用 1/2/4/8） */
-    private void blindScanHvac() {
-        bootLog("[HVAC] ==== 盲扫候选 ID（枚举不足时的温度保险）====");
-        int hit = 0;
-        // A. AOSP 标准大数字（子区域类型的 HVAC 温度/风量都是这个系列）
-        int[] stdIds = {
-                358614274, 358614275,  // HVAC_TEMPERATURE_CURRENT / SET（摄氏）
-                356517120, 356517121,  // HVAC_FAN_SPEED / FAN_DIRECTION
-                354419973, 354419984,  // HVAC_AC_ON / HVAC_POWER_ON
-                356517135,              // HVAC_ACTUAL_FAN_SPEED_RPM
-                291505923,              // ENV_OUTSIDE_TEMPERATURE
-        };
-        // B. 厂商小数字段（CarLauncher 实锚 16387/16395，邻位大概率是温度/风量）
-        int[] vendorIds = new int[32];
-        for (int i = 0; i < 32; i++) vendorIds[i] = 16384 + i; // 16384~16415
-        // C. 小数字段 0~15（温度单位 propId=4 就在这个段，附近可能有温度设置值）
-        int[] tinyIds = new int[16];
-        for (int i = 0; i < 16; i++) tinyIds[i] = i;
-
-        int[][] areaSets = {{0}, {8}, {1, 4}, {0, 8}};
-        for (int[] ids : new int[][]{stdIds, vendorIds, tinyIds}) {
-            for (int propId : ids) {
-                for (int[] areas : areaSets) {
-                    for (int area : areas) {
-                        String v = readHvacPropQuiet(propId, area);
-                        if (v != null) {
-                            hit++;
-                            String tag = "area" + area + "=" + v;
-                            hvacProps.merge(propId, tag, (o, n) -> o.contains(n) ? o : o + ";" + n);
-                            bootLog("[HVAC] 盲扫命中 propId=" + propId + " area=" + area + " → " + v);
-                        }
-                    }
-                }
-            }
-        }
-        bootLog("[HVAC] 盲扫完成: 命中 " + hit + " 个（含重复区域）");
-        if (hit > 0) ui("HVAC 盲扫命中 " + hvacProps.size() + " 个属性");
-    }
-
-    /** 盲扫专用读值：直接用 readHvacValue（不写失败日志——几百个组合的失败会刷爆日志） */
-    private String readHvacPropQuiet(int propId, int area) {
-        Object v = readHvacValueQuiet(propId, area);
-        if (v == null) return null;
-        return v instanceof Float ? ((Float) v) + "f" : String.valueOf(v);
-    }
-
-    /** 静默读原始值（盲扫用，不写日志；逻辑同 readHvacValue：真 0 返回 Int 0） */
-    private Object readHvacValueQuiet(int propId, int area) {
-        Object intVal = null;
-        try {
-            Method getInt = hvacManager.getClass().getMethod("getIntProperty", int.class, int.class);
-            Object v = getInt.invoke(hvacManager, propId, area);
-            if (v instanceof Integer) {
-                if ((Integer) v != 0) return v;
-                intVal = v;
-            }
-        } catch (Throwable ignored) {}
-        try {
-            Method getFloat = hvacManager.getClass().getMethod("getFloatProperty", int.class, int.class);
-            Object v = getFloat.invoke(hvacManager, propId, area);
-            if (v instanceof Float) return v;
-        } catch (Throwable ignored) {}
-        return intVal;
-    }
-
-    /** 读原始值：Int 成功且非 0 直接返回；Int 读到 0 时续试 Float（float 属性会被误读成 0），
-     *  Float 也失败则返回原 Int 0（真 0 值，如风量关到 0）
-     *  23:01 实测 bug：16385 是 float 属性，getIntProperty 返回 Integer 0 不抛异常，
-     *  直接短路导致启动读不到 22.0℃ */
-    private Object readHvacValue(int propId, int area) {
-        Object intVal = null;
-        try {
-            Method getInt = hvacManager.getClass().getMethod("getIntProperty", int.class, int.class);
-            Object v = getInt.invoke(hvacManager, propId, area);
-            if (v instanceof Integer) {
-                if ((Integer) v != 0) return v;
-                intVal = v;
-                bootLog("[HVAC] (" + propId + "," + area + ") Int=0，续试Float");
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            Method getFloat = hvacManager.getClass().getMethod("getFloatProperty", int.class, int.class);
-            Object v = getFloat.invoke(hvacManager, propId, area);
-            if (v instanceof Float) return v;
-        } catch (Throwable floatFail) {
-            bootLog("[HVAC] (" + propId + "," + area + ") 读值失败: " + rootCause(floatFail));
-        }
-        return intVal; // Int 0 是真 0（float 属性已被 Float 分支接管），否则 null
-    }
-
-    private int parseHvacInt(String v) {
-        if (v == null) return -1;
-        try { return Integer.parseInt(v.replace("f", "")); } catch (NumberFormatException e) { return -1; }
-    }
-
-    private static String hvacPropName(int propId) {
-        String n = HVAC_PROP_NAMES.get(propId);
-        return n != null ? n : "HVAC属性" + propId;
-    }
-
-    /** dump 对象全部方法+字段（老版类 API 差异时一次看清真实结构） */
-    private static String dumpObjectStructure(Object o) {
-        StringBuilder sb = new StringBuilder();
-        try {
-            Class<?> c = o.getClass();
-            sb.append("类名: ").append(c.getName()).append("\n方法: ");
-            for (Method m : c.getMethods()) sb.append(m.getName()).append("(")
-                    .append(m.getParameterCount()).append(") ");
-            sb.append("\n声明字段: ");
-            for (java.lang.reflect.Field f : c.getDeclaredFields()) sb.append(f.getName())
-                    .append(":").append(f.getType().getSimpleName()).append(" ");
-        } catch (Throwable e) {
-            sb.append("dump失败: ").append(e);
-        }
-        return sb.toString();
-    }
-
-    private static String safeToString(Object o) {
-        try { return o == null ? "null" : o.toString(); } catch (Throwable e) { return "toString炸:" + e.getClass().getSimpleName(); }
-    }
-
-    /** HVAC 推送：全属性缓存到 hvacProps（区域|值），16387 区 8 更新滤芯入参 r（照抄 dn.a(CarPropertyValue)） */
-    private void handleHvacEvent(Object carPropertyValue) {
-        try {
-            Method getProp = carPropertyValue.getClass().getMethod("getPropertyId");
-            Method getArea = carPropertyValue.getClass().getMethod("getAreaId");
-            Method getVal = carPropertyValue.getClass().getMethod("getValue");
-            int prop = (Integer) getProp.invoke(carPropertyValue);
-            int area = (Integer) getArea.invoke(carPropertyValue);
-            Object v = getVal.invoke(carPropertyValue);
-            String vs = v == null ? "null" : v.toString();
-
-        // 缓存：key=propId，value="area=值"（同 prop 多区域用分号拼接，同 area 替换旧值）
-        String old = hvacProps.containsKey(prop) ? hvacProps.get(prop) : "";
-        String tag = "area" + area + "=" + vs;
-        String prefix = "area" + area + "=";
-        if (old.isEmpty()) {
-            hvacProps.put(prop, tag);
+    // ========== 仪表盘刷新 ==========
+
+    private void updateDashboard() {
+        if (currentData == null) return;
+
+        // ---- 顶部横幅 ----
+        tvGear.setText(gearStr(currentData.gear));
+        if (currentData.range < 0) {
+            tvRange.setText("--");
         } else {
-            String[] parts = old.split(";");
-            StringBuilder sb = new StringBuilder();
-            boolean found = false;
-            for (int i = 0; i < parts.length; i++) {
-                if (i > 0) sb.append(";");
-                if (parts[i].startsWith(prefix)) { sb.append(tag); found = true; }
-                else sb.append(parts[i]);
-            }
-            if (!found) sb.append(";").append(tag);
-            hvacProps.put(prop, sb.toString());
+            tvRange.setText(String.format("%.0f", Math.max(currentData.range, 0)));
         }
-        // 仅空调控制属性写文件日志：CCM功率(16387)、风量档(16388)、AC制冷(16393)、内循环(16395)、座椅通风(20481)
-        if (prop == 16387 || prop == 16388 || prop == 16393 || prop == 16395 || prop == 20481) {
-            hvacLog("[HVAC] 推送 " + hvacPropName(prop) + " area=" + area + " → " + vs);
+        if (tvRangeUnit != null) tvRangeUnit.setText(currentData.mileageUnit);
+        if (currentData.odometer < 0 || currentData.odometer == 1.6777215E7f) {
+            tvOdo.setText("--");
+        } else {
+            tvOdo.setText(String.format("%.0f", currentData.odometer));
         }
+        if (tvOdoUnit != null) tvOdoUnit.setText(currentData.mileageUnit);
+        tvOil.setText(currentData.oilLife < 0 ? "--" : setUnitSmall(currentData.oilLife + "%", "%"));
+        tvFuel.setText(currentData.fuelPct < 0 ? "--" : setUnitSmall(String.format("%.0f%%", Math.max(currentData.fuelPct, 0)), "%"));
 
-        // 空调状态提示动画（必须主线程：ValueAnimator + invalidate）
-        final int fProp = prop, fArea = area;
-        final String fVs = vs;
-        handler.post(() -> showHvacToastIfNeeded(fProp, fArea, fVs));
+        // ---- 速度 ----
+        tvSpeed.setText(currentData.speed < 0 ? "--" : String.format("%.0f", Math.max(currentData.speed, 0)));
 
-        if (prop == 16387 && area == 8) {
-            aarHvacCcm = v instanceof Integer ? (Integer) v : parseHvacInt(vs);
-            computeAarState();
-        }
-        // 温度推送：持久化真实值（非32℃默认值）
-        if (prop == 16385) {
-            try {
-                float tv = v instanceof Float ? (Float) v : Float.parseFloat(vs.replace("f", ""));
-                if (tv > 0 && tv < 31.5f) {
-                    uiPrefs().edit().putString(KEY_HVAC_TEMP, vs).apply();
-                }
-            } catch (Throwable ignored) {}
-        }
-        refreshDisplay();
-        } catch (Throwable e) {
-            bootLog("[HVAC] 推送解析失败: " + rootCause(e));
-        }
+        // ---- 转向灯 ----
+        if (turnLeft != null) turnLeft.update(currentData.turnLeft, true);
+        if (turnRight != null) turnRight.update(currentData.turnRight, false);
+
+        // ---- 四轮胎压 ----
+        updateTireCircle(tagLFTire, 0);
+        updateTireCircle(tagRFTire, 1);
+        updateTireCircle(tagLRTire, 2);
+        updateTireCircle(tagRRTire, 3);
+
+        // ---- 门窗 ----
+        updateDoorCircle(tagLFDw, currentData.doorLB, currentData.winDriver);
+        updateDoorCircle(tagRFDw, currentData.doorRB, currentData.winPassenger);
+        updateDoorCircle(tagLRDw, currentData.doorLR, currentData.winLeftRear);
+        updateDoorCircle(tagRRDw, currentData.doorRR, currentData.winRightRear);
+        boolean trunkOpen = currentData.trunkIn > 0 || currentData.trunkOut > 0;
+        if (tagTrunk != null) tagTrunk.updateTrunk(trunkOpen);
+
+        // ---- 空调卡 ----
+        String tempDriver = formatTemp(currentData.tempDriver);
+        String tempPassenger = formatTemp(currentData.tempPassenger);
+        tvTempDriver.setText(tempDriver == null ? "--" : setUnitSmall(tempDriver + "℃", "℃"));
+        tvTempPassenger.setText(tempPassenger == null
+                ? (tempDriver == null ? "--" : setUnitSmall(tempDriver + "℃", "℃"))
+                : setUnitSmall(tempPassenger + "℃", "℃"));
+        tvPm.setText(currentData.pm25 >= 0 ? setUnitSmall(currentData.pm25 + " μg/m³", " μg/m³") : "--");
+        tvPm.setTextColor(pmColor(currentData.pm25));
+
+        linkTagDots();
     }
 
-    /** HVAC 状态提示：检测空调/AC/风量/内循环值变化，触发动画 */
-    private Integer lastCcm = null;     // 16387 上次值
-    private Integer lastFanLevel = null; // 16388 上次值
-    private Integer lastAc = null;       // 16393 上次值
-    private Integer lastRecycle = null;  // 16395 上次值
-
-    /** 用启动读到的 HVAC 缓存初始化提示基线：
-     *  否则第一次按键推送被当"首次"吞掉不弹动画（基线为 null），
-     *  第二次才有基线可比才弹——这就是"要按两次才显示"的根因。
-     *  缓存没有该 area 时直接读 ECU 兜底（CCM 保底同款）并回填缓存：
-     *  枚举读取"首个区域成功即整体替换、其余丢给推送补齐"，
-     *  16395 等属性 area8 常常不在缓存里，纯查缓存基线会拿到 null */
-    private void initHvacToastBaseline() {
-        lastCcm = baselineFromCacheOrEcu(16387, 8);
-        lastFanLevel = baselineFromCacheOrEcu(16388, 0);
-        if (lastFanLevel == null) lastFanLevel = baselineFromCacheOrEcu(16388, 8);
-        lastAc = baselineFromCacheOrEcu(16393, 8);
-        lastRecycle = baselineFromCacheOrEcu(16395, 8);
+    private String formatTemp(float temp) {
+        if (temp == Float.MIN_VALUE || temp <= 0) return null;
+        return String.format("%.1f", temp);
     }
 
-    /** 先查 hvacProps 缓存，无此 area 则 getIntProperty 直读并回填缓存 */
-    private Integer baselineFromCacheOrEcu(int propId, int area) {
-        Integer v = hvacAreaInt(propId, area);
-        if (v != null) return v;
-        try {
-            Method getInt = hvacManager.getClass().getMethod("getIntProperty", int.class, int.class);
-            Object r = getInt.invoke(hvacManager, propId, area);
-            if (r instanceof Integer) {
-                int val = (Integer) r;
-                String tag = "area" + area + "=" + val;
-                String old = hvacProps.get(propId);
-                hvacProps.put(propId, old == null ? tag : old + ";" + tag);
-                return val;
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    /** 从 hvacProps 缓存取 prop 的指定 area 当前值（无此 area 返回 null）。
-     *  温度类值可能是 "23.0" 带小数，parseInt 会失败，用 parseFloat 取整。 */
-    private Integer hvacAreaInt(int propId, int wantArea) {
-        String s = hvacProps.get(propId);
-        if (s == null) return null;
-        for (String part : s.split(";")) {
-            String p = part.trim();
-            if (p.startsWith("area" + wantArea + "=")) {
-                String val = p.substring(p.indexOf('=') + 1).replace("f", "");
-                try {
-                    return Integer.parseInt(val);
-                } catch (NumberFormatException e) {
-                    try {
-                        return (int) Float.parseFloat(val);
-                    } catch (NumberFormatException e2) {
-                        return null;
-                    }
-                }
-            }
+    private void updateTireCircle(TireCircleView v, int idx) {
+        if (v == null) return;
+        float pressure = currentData.tirePressure[idx];
+        int state = currentData.tireState[idx];
+        if (pressure < 0) {
+            v.update("--", "kPa", TireCircleView.colorInvalid(this), false);
+            return;
         }
-        return null;
+        int color;
+        boolean alert;
+        if (pressure >= 65533f) {
+            color = TireCircleView.colorInvalid(this); alert = false;
+        } else if (state > 250) {
+            color = TireCircleView.colorAlert(this); alert = true;
+        } else if (state > 150 || state > 75) {
+            color = TireCircleView.colorWarn(this); alert = false;
+        } else {
+            color = TireCircleView.colorOk(this); alert = false;
+        }
+        v.update(pressureNum(pressure),
+                currentData.tireUnit.isEmpty() ? "--" : currentData.tireUnit, color, alert);
     }
 
-    /** 从 hvacProps 缓存取 prop 的指定 area 当前 float 值（温度等带小数的数据用）。 */
-    private Float hvacAreaFloat(int propId, int wantArea) {
-        String s = hvacProps.get(propId);
-        if (s == null) return null;
-        for (String part : s.split(";")) {
-            String p = part.trim();
-            if (p.startsWith("area" + wantArea + "=")) {
-                String val = p.substring(p.indexOf('=') + 1).replace("f", "");
-                try {
-                    return Float.parseFloat(val);
-                } catch (NumberFormatException e) {
-                    return null;
-                }
-            }
+    private String pressureNum(float raw) {
+        if (raw >= 65533f) return "--";
+        String unit = currentData != null ? currentData.tireUnit : "";
+        if ("bar".equals(unit)) {
+            float f = raw;
+            if (f % 5.0f == 0.0f) f += 1.0f;
+            return String.format("%.2f", f * 0.01f);
         }
-        return null;
+        if ("psi".equals(unit)) return String.format("%.0f", raw * 0.14504f);
+        if ("kPa".equals(unit)) {
+            int v = (int) raw;
+            int f2 = v % 10;
+            if (f2 <= 2) return String.valueOf(v / 10 * 10);
+            if (f2 >= 8) return String.valueOf((v / 10 + 1) * 10);
+            return String.valueOf(v / 10 * 10 + 5);
+        }
+        return String.valueOf((int) raw);
     }
+
+    private void updateDoorCircle(DoorCircleView v, int doorState, int winState) {
+        if (v == null) return;
+        boolean doorOpen = doorState > 0;
+        boolean winOpen = winState >= 0 && winState != 1;
+        v.update(doorOpen, winOpen);
+    }
+
+    // ========== HVAC Toast ==========
 
     private void showHvacToastIfNeeded(int prop, int area, String vs) {
         if (hvacToast == null) return;
@@ -2453,9 +1064,8 @@ public class MainActivity extends Activity {
         try {
             int val = parseHvacInt(vs);
             if (prop == 16387 && area == 8) {
-                // CCM功率：1=空调通电 0/2=空调关闭
                 if (lastCcm == null || lastCcm != val) {
-                    if (lastCcm != null) {  // 首次不提示
+                    if (lastCcm != null) {
                         if (val == 1) hvacToast.show("空调开");
                         else hvacToast.show("空调关");
                     }
@@ -2469,7 +1079,6 @@ public class MainActivity extends Activity {
                     lastFanLevel = val;
                 }
             } else if (prop == 16393 && area == 8) {
-                // A/C制冷：1=开 0=关
                 if (lastAc == null || lastAc != val) {
                     if (lastAc != null) {
                         if (val == 1) hvacToast.show("制冷开");
@@ -2478,7 +1087,6 @@ public class MainActivity extends Activity {
                     lastAc = val;
                 }
             } else if (prop == 16395 && area == 8) {
-                // 内循环：1=开 0=关
                 if (lastRecycle == null || lastRecycle != val) {
                     if (lastRecycle != null) {
                         if (val == 1) hvacToast.show("内循环开");
@@ -2490,587 +1098,13 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {}
     }
 
-    /** 从 SP 恢复上次 HVAC 温度：ECU 上电默认32℃，真实值要等推送，先用记忆值 */
-    private void restoreHvacTempFromSP() {
-        try {
-            String saved = uiPrefs().getString(KEY_HVAC_TEMP, null);
-            if (saved == null) return;
-            // 解析格式 area1=22.0f;area4=22.0f 或 area1=22.0;area4=22.0
-            StringBuilder sb = new StringBuilder();
-            for (String tag : saved.split(";")) {
-                int eq = tag.indexOf('=');
-                if (eq <= 0) continue;
-                String areaStr = tag.substring(0, eq);
-                String val = tag.substring(eq + 1);
-                // 取当前 hvacProps 里该 area 的 ECU 读数
-                float ecuVal = -1f;
-                String cur = hvacProps.get(16385);
-                if (cur != null) {
-                    for (String part : cur.split(";")) {
-                        if (part.startsWith(areaStr + "=")) {
-                            try { ecuVal = Float.parseFloat(part.substring(part.indexOf('=') + 1).replace("f", "")); } catch (Throwable ignored2) {}
-                            break;
-                        }
-                    }
-                }
-                // ECU 读到 32℃（上电默认）时用记忆值覆盖
-                float memVal = Float.parseFloat(val.replace("f", ""));
-                if (ecuVal >= 31.5f || cur == null) {
-                    if (sb.length() > 0) sb.append(";");
-                    sb.append(areaStr).append("=").append(val);
-                } else {
-                    if (sb.length() > 0) sb.append(";");
-                    sb.append(areaStr).append("=").append(ecuVal).append("f");
-                }
-            }
-            if (sb.length() > 0) {
-                hvacProps.put(16385, sb.toString());
-                hvacLog("[HVAC] 温度记忆恢复: " + sb.toString() + "（ECU上电默认32℃已覆盖）");
-            }
-        } catch (Throwable ignored) {}
+    private int parseHvacInt(String v) {
+        if (v == null) return -1;
+        try { return Integer.parseInt(v.replace("f", "")); } catch (NumberFormatException e) { return -1; }
     }
 
-    /** 读 AAR 全套属性 + 注册 YF 回调（照抄 dn.a(CarYFSettingManager)） */
-    private void readAarData() {
-        bootLog("[新风] ==== 读取智能新风/AAR（vendor_yfsetting）====");
-        try {
-            Class<?> mgrClass = yfManager.getClass();
-            Method getProp = mgrClass.getMethod("getGlobalProperty", Class.class, int.class);
+    // ========== 格式化辅助 ==========
 
-            // 1) 回调注册（胎压单位/PM 推送）
-            try {
-                Class<?> cbClass = Class.forName("android.car.hardware.CarYFSettingManager$CarYFSettingCallback");
-                yfCallback = Proxy.newProxyInstance(cbClass.getClassLoader(),
-                        new Class<?>[]{cbClass},
-                        (proxy, method, args) -> {
-                            String m = method.getName();
-                            if ("hashCode".equals(m)) return System.identityHashCode(proxy);
-                            if ("equals".equals(m)) return proxy == args[0];
-                            if ("toString".equals(m)) return "YfCallbackProxy";
-                            if ("onChangeEvent".equals(m) && args != null && args.length > 0) {
-                                handleYfEvent(args[0]);
-                            }
-                            Class<?> rt = method.getReturnType();
-                            if (rt == boolean.class) return Boolean.FALSE;
-                            if (rt == int.class) return 0;
-                            if (rt == long.class) return 0L;
-                            if (rt == float.class) return 0f;
-                            if (rt == double.class) return 0d;
-                            return null;
-                        });
-                Method register = mgrClass.getMethod("registerCallback", cbClass);
-                register.invoke(yfManager, yfCallback);
-                bootLog("[新风] YF 回调注册OK");
-            } catch (Throwable e) {
-                bootLog("[新风] YF 回调注册失败: " + rootCause(e));
-            }
-
-            // 2) 一次性读当前值（dn.a(CarYFSettingManager) 初始化顺序）
-            aarPmNow = readYfInt(getProp, YF_PM_NOW, "车内PM2.5");
-            aarPmDiag = readYfInt(getProp, YF_PM_DIAG, "PM传感器诊断");
-            aarSensorMiss = readYfInt(getProp, YF_SENSOR_MISS, "PM传感器缺失");
-            aarPowerBtn = readYfInt(getProp, YF_CCM_POWER, "CCM功率按钮");
-            winDriver = readYfInt(getProp, YF_WIN_DRIVER, "司机车窗");
-            winPassenger = readYfInt(getProp, YF_WIN_PASSENGER, "副驾车窗");
-            winLeftRear = readYfInt(getProp, YF_WIN_LEFT_REAR, "左后车窗");
-            winRightRear = readYfInt(getProp, YF_WIN_RIGHT_REAR, "右后车窗");
-            // PM 历史（dn.d(): 10 条，2~20 点）
-            for (int i = 0; i < YF_PM_HISTORY.length; i++) {
-                aarPmHistory[i] = readYfInt(getProp, YF_PM_HISTORY[i], "PM历史" + (i * 2 + 2) + "点");
-            }
-
-            // 3) 请求胎压单位（照抄 fk.b()+fm: 写 292565248 触发推送）
-            try {
-                Method setProp = mgrClass.getMethod("setGlobalProperty", Class.class, int.class, Object.class);
-                // 照抄 fm.java：{1, b(2312), b(USER_MASK=0xF000), 4} = {1,09,08,F0,00,04}
-                byte[] req = {1, 0x09, 0x08, (byte) 0xF0, 0x00, 0x04};
-                setProp.invoke(yfManager, byte[].class, YF_TIRE_UNIT_REQ, req);
-                bootLog("[新风] 胎压单位请求已发送(292565248)");
-            } catch (Throwable e) {
-                bootLog("[新风] 胎压单位请求失败: " + rootCause(e));
-            }
-
-            // 4) 初始滤芯状态
-            computeAarState();
-            ui("智能新风读取完成 PM=" + (aarPmNow >= 0 ? aarPmNow + "μg/m³" : "N/A"));
-        } catch (Throwable e) {
-            bootLog("[新风] AAR 读取流程异常:\n" + stackTrace(e));
-            ui("智能新风读取失败: " + e.getMessage());
-        }
-    }
-
-    private int readYfInt(Method getProp, int propId, String label) {
-        try {
-            Object v = getProp.invoke(yfManager, Integer.class, propId);
-            int r = v instanceof Integer ? (Integer) v : -1;
-            bootLog("[新风] " + label + "(" + propId + ")=" + r);
-            return r;
-        } catch (Throwable e) {
-            bootLog("[新风] " + label + "(" + propId + ")读取失败: " + rootCause(e));
-            return -1;
-        }
-    }
-
-    /** YF 回调推送（照抄 dr.java/fk+fl.java） */
-    private void handleYfEvent(Object carPropertyValue) {
-        try {
-            Method getProp = carPropertyValue.getClass().getMethod("getPropertyId");
-            int prop = (Integer) getProp.invoke(carPropertyValue);
-            Method getVal = carPropertyValue.getClass().getMethod("getValue");
-            Object val = getVal.invoke(carPropertyValue);
-            switch (prop) {
-                case YF_PM_NOW:
-                    aarPmNow = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] PM2.5 推送=" + aarPmNow);
-                    break;
-                case YF_PM_DIAG:
-                    aarPmDiag = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] PM诊断推送=" + aarPmDiag);
-                    break;
-                case YF_SENSOR_MISS:
-                    aarSensorMiss = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] 传感器缺失推送=" + aarSensorMiss);
-                    break;
-                case YF_CCM_POWER:
-                    aarPowerBtn = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] CCM功率推送=" + aarPowerBtn);
-                    break;
-                case YF_WIN_DRIVER:
-                    winDriver = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] 司机车窗推送=" + winDriver + (winDriver == 0 ? "(开)" : winDriver == 1 ? "(关)" : "(?)"));
-                    break;
-                case YF_WIN_PASSENGER:
-                    winPassenger = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] 副驾车窗推送=" + winPassenger + (winPassenger == 0 ? "(开)" : winPassenger == 1 ? "(关)" : "(?)"));
-                    break;
-                case YF_WIN_LEFT_REAR:
-                    winLeftRear = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] 左后车窗推送=" + winLeftRear + (winLeftRear == 0 ? "(开)" : winLeftRear == 1 ? "(关)" : "(?)"));
-                    break;
-                case YF_WIN_RIGHT_REAR:
-                    winRightRear = val instanceof Integer ? (Integer) val : -1;
-                    bootLog("[新风] 右后车窗推送=" + winRightRear + (winRightRear == 0 ? "(开)" : winRightRear == 1 ? "(关)" : "(?)"));
-                    break;
-                    default:
-                        // 胎压单位（fl.java: a(bArr,i)=(b[i]<<8)|b[i+1] 两字节大端；
-                        // 标识 a(bArr,0)==2312，单位 a(bArr,2)：0=psi 1=kPa 2=bar）
-                        if (val instanceof byte[]) {
-                            byte[] b = (byte[]) val;
-                            int len = Math.min(b.length, 16);
-                            StringBuilder hex = new StringBuilder();
-                            for (int i = 0; i < len; i++) hex.append(String.format("%02X ", b[i]));
-                            if (b.length > 3 && (((b[0] & 0xFF) << 8) | (b[1] & 0xFF)) == 2312) {
-                                int unit = ((b[2] & 0xFF) << 8) | (b[3] & 0xFF); // 两字节大端，非单字节
-                                String u = unit == 0 ? "psi" : unit == 1 ? "kPa" : unit == 2 ? "bar" : "?" + unit;
-                                tireUnit = u;
-                                bootLog("[新风] 胎压单位推送: " + u + " bytes=[" + hex + "]");
-                                ui("胎压单位: " + u);
-                            } else {
-                                bootLog("[新风] YF byte[] 推送 prop=" + prop + " bytes=[" + hex + "]");
-                            }
-                        }
-                        break;
-            }
-            computeAarState();
-            refreshDisplay();
-        } catch (Throwable e) {
-            bootLog("[新风] YF 推送解析失败: " + rootCause(e));
-        }
-    }
-
-    /**
-     * 滤芯状态机（照抄 dn.java 四函数）：
-     * 入参：q=CCM功率按钮 r=HVAC CCM s=传感器缺失 t=PM浓度 u=诊断 o=上一次状态
-     * o=1过滤开启 2过滤关闭 3过滤完成 4异常(滤芯需更换)
-     */
-    private void computeAarState() {
-        if (aarPmNow < 0) return; // 数据未到不判定
-        int q = Math.max(aarPowerBtn, 0), r = Math.max(aarHvacCcm, 0),
-                s = Math.max(aarSensorMiss, 0), t = aarPmNow, u = Math.max(aarPmDiag, 0);
-        int newState;
-        if (aarFilterOff(q, r, s, t, u)) newState = 2;
-        else if (aarFilterOn(q, r, s, t, u)) newState = 1;
-        else if (aarFilterDone(q, r, s, t, u)) newState = 3;
-        else if (aarFilterErr(q, r, s, t, u, aarState)) newState = 4;
-        else newState = 0;
-        aarState = newState;
-    }
-
-    /** dn.d(): 过滤关闭 — q=0 且 r∈{2,0} 且 (传感器缺失 或 PM 有效0<PM≤509 或 PM无效且诊断∈{4,0,5}) */
-    private boolean aarFilterOff(int q, int r, int s, int t, int u) {
-        if (q != 0) return false;
-        if (r != 2 && r != 0) return false;
-        if (s == 1) return true;
-        if (s != 0) return false;
-        if (t > 0 && t <= 509) return true;
-        if (t == 510 || t == 511) return u == 4 || u == 0 || u == 5;
-        return false;
-    }
-
-    /** dn.b(): 过滤开启 — q=1 且 r=1 且 (传感器缺失 或 35<PM≤509 或 PM无效且诊断∈{4,0,5}) */
-    private boolean aarFilterOn(int q, int r, int s, int t, int u) {
-        if (q != 0 || r != 1) return false;
-        if (s == 1) return true;
-        if (s != 0) return false;
-        if (t > 35 && t <= 509) return true;
-        if (t == 510 || t == 511) return u == 4 || u == 0 || u == 5;
-        return false;
-    }
-
-    /** dn.c(): 过滤完成 — q=0 r=1 传感器正常 PM≤35 */
-    private boolean aarFilterDone(int q, int r, int s, int t, int u) {
-        return q == 0 && r == 1 && s == 0 && t <= 35;
-    }
-
-    /** dn.a(): 异常(滤芯需更换) — PM无效且诊断∈{3,6,2}；或上态为1时 q=1 r≠0 */
-    private boolean aarFilterErr(int q, int r, int s, int t, int u, int prevState) {
-        if (q != 0 || r != 1) {
-            return q == 1 && r != 0 && prevState == 1;
-        }
-        if (t == 510 || t == 511) {
-            return u == 3 || u == 6 || u == 2;
-        }
-        return false;
-    }
-
-    /** 车内 PM2.5 等级（照抄 dn.c(i) 分档，返回 1~6，0=无效） */
-    private static int pmLevel(int pm) {
-        if (pm < 0) return 0;
-        if (pm <= 35) return 1;
-        if (pm <= 75) return 2;
-        if (pm <= 115) return 3;
-        if (pm <= 150) return 4;
-        if (pm <= 250) return 5;
-        return pm <= 500 ? 6 : 0; // >500 视为无效（510/511 无效哨兵）
-    }
-
-    private static String pmLevelStr(int lv) {
-        switch (lv) {
-            case 1: return "优";
-            case 2: return "良";
-            case 3: return "轻度";
-            case 4: return "中度";
-            case 5: return "重度";
-            case 6: return "严重";
-            default: return "无效";
-        }
-    }
-
-    // ========== 车辆信息（标准 API + 百度定制全套，照抄 CarLauncher eh.n()）==========
-
-    private void readCarInfo() {
-        bootLog("[车况] ==== 读取车辆信息 ====");
-        ui("读取车辆信息...");
-        // 1) 标准 API
-        String[][] calls = {
-                {"制造商", "getManufacturer"},
-                {"型号", "getModel"},
-                {"年份", "getModelYear"},
-                {"VIN", "getVehicleId"},
-                {"油箱容量", "getFuelCapacity"},
-                {"EV电池容量", "getEvBatteryCapacity"},
-        };
-        for (String[] c : calls) {
-            try {
-                Object result = infoManager.getClass().getMethod(c[1]).invoke(infoManager);
-                bootLog("[车况] " + c[0] + ": " + result);
-                ui(c[0] + ": " + result);
-            } catch (Throwable e) {
-                bootLog("[车况] " + c[0] + " 读取失败: " + rootCause(e));
-            }
-        }
-        // 车辆标识（照抄 CarLauncher em.java: getStringProperty(117440591)）
-        try {
-            Method getString = infoManager.getClass().getMethod("getStringProperty", int.class);
-            Object identify = getString.invoke(infoManager, PROP_CAR_IDENTIFY);
-            bootLog("[车况] 车辆标识(117440591): " + identify);
-            ui("车辆标识: " + identify);
-        } catch (Throwable e) {
-            bootLog("[车况] 车辆标识读取失败: " + rootCause(e));
-        }
-        // 2) 百度定制 API（照抄 CarLauncher：车型全套 + 燃油类型 + AAR）
-        try {
-            Method getBytes = infoManager.getClass().getMethod("getBytesProprety", int.class);
-            int[][] props = {
-                    {INFO_CAR_TYPE, 0},
-                    {INFO_CAR_STYLE, 0},
-                    {INFO_CAR_PATTERN, 0},
-                    {INFO_CAR_COLOR, 0},
-                    {INFO_FUEL_TYPE, 0},
-                    {INFO_AAR_CONFIG, 0},
-            };
-            String[] names = {"车型代码(117440513)", "车型款式(117440515)", "车型代码VsCode(117440516)", "车身颜色(117440517)", "燃油类型(117440545)", "AAR配置(117440539)"};
-            for (int i = 0; i < props.length; i++) {
-                try {
-                    byte[] bytes = (byte[]) getBytes.invoke(infoManager, props[i][0]);
-                    if (bytes != null && bytes.length > 0) {
-                        StringBuilder hex = new StringBuilder();
-                        for (byte b : bytes) hex.append(b & 0xFF).append(" ");
-                        bootLog("[车况] " + names[i] + ": bytes=[" + hex + "] int=" + bytesToInt(bytes));
-                        ui(names[i] + ": " + bytesToInt(bytes));
-                    } else {
-                        bootLog("[车况] " + names[i] + ": 返回空");
-                    }
-                } catch (Throwable e) {
-                    bootLog("[车况] " + names[i] + " 读取失败: " + rootCause(e));
-                }
-            }
-            // 车型名称（照抄 CarLauncher eh.m(): bytes[0]+bytes[1] 为索引查 h 数组）
-            try {
-                byte[] bytes = (byte[]) getBytes.invoke(infoManager, INFO_CAR_TYPE);
-                if (bytes != null && bytes.length > 1) {
-                    int idx = (bytes[0] & 0xFF) + (bytes[1] & 0xFF);
-                    String carName = idx < CAR_TYPE_NAMES.length ? CAR_TYPE_NAMES[idx] : "Default";
-                    bootLog("[车况] 车型名称: 索引=" + idx + " → " + carName);
-                    ui("车型名称: " + carName);
-                }
-            } catch (Throwable e) {
-                bootLog("[车况] 车型名称解析失败: " + rootCause(e));
-            }
-        } catch (Throwable e) {
-            bootLog("[车况] getBytesProprety 方法不存在: " + rootCause(e));
-        }
-    }
-
-    private int bytesToInt(byte[] b) {
-        int r = 0;
-        for (int i = 0; i < b.length; i++) r |= (b[i] & 0xFF) << (8 * i);
-        return r;
-    }
-
-    /** 反射异常取根因（InvocationTargetException 里的真实异常） */
-    private static String rootCause(Throwable e) {
-        Throwable t = e;
-        while (t.getCause() != null && t.getCause() != t) t = t.getCause();
-        return t.getClass().getName() + ": " + t.getMessage();
-    }
-
-    // ========== 显示 ==========
-
-    private void refreshDisplay() {
-        StringBuilder d = new StringBuilder();
-        d.append("════════════════════════\n");
-        d.append("  车况数据 (CarService直读)\n");
-        d.append("════════════════════════\n");
-
-        // 总里程：float，无效值哨兵 16777215（照抄 CarLauncher eh.i()）
-        float odometer = getFloat(evOdometer);
-        float speed = getFloat(evSpeed);
-        int gear = getInt(evGear);
-        float range = getFloat(evRange);
-        float fuelPct = getFloat(evFuelPct);
-        int fuelWarn = getInt(evFuelWarn);
-        int ignition = getInt(evIgnition);
-
-        d.append(String.format("总里程: %s %s\n",
-                (odometer >= 0 && odometer != 1.6777215E7f) ? String.format("%.1f", odometer) : "N/A", mileageUnit));
-        d.append(String.format("车速: %s km/h\n", speed >= 0 ? String.format("%.0f", speed) : "N/A"));
-        d.append(String.format("挡位: %s\n", evGear == null ? "N/A(无数据)" : gearStr(gear)));
-        d.append(String.format("油量: %s\n", fuelPct >= 0 ? String.format("%.0f%%", fuelPct) : "N/A"));
-        d.append(String.format("续航: %s %s\n",
-                range >= 0 ? String.format("%.0f", range) : "N/A", mileageUnit));
-        d.append(String.format("油量预警: %s\n",
-                evFuelWarn == null ? "N/A(无数据)" : (fuelWarn == 1 ? "触发" : "正常")));
-        d.append(String.format("点火: %s\n", ignitionStr(ignition)));
-        int oilLife = getInt(evOilLife);
-        d.append(String.format("机油寿命: %s\n",
-                evOilLife == null ? "N/A(无数据)" : oilLife + "%"));
-
-        d.append("──────────────────────\n");
-        d.append("车门:\n");
-        d.append(String.format("  左前:%s 右前:%s\n", doorStr(evDoorLB), doorStr(evDoorRB)));
-        d.append(String.format("  左后:%s 右后:%s\n", doorStr(evDoorLR), doorStr(evDoorRR)));
-        d.append(String.format("  后备箱内:%s 外:%s\n", doorStr(evTrunkIn), doorStr(evTrunkOut)));
-
-        d.append("──────────────────────\n");
-        d.append("胎压");
-        if (!tireUnit.isEmpty()) d.append("(单位: ").append(tireUnit).append(")");
-        d.append(":\n");
-        String[] labels = {"左前", "右前", "左后", "右后"};
-        for (int i = 0; i < TIRE_AREAS.length; i++) {
-            TireData td = tireData.get(TIRE_AREAS[i]);
-            if (td != null) {
-                d.append(String.format("  %s: %s %s %s\n",
-                        labels[i],
-                        pressureStr(td.pressure),
-                        tempStr(td.temp),
-                        tireStateStr(td.state)));
-            } else {
-                d.append("  " + labels[i] + ": N/A\n");
-            }
-        }
-
-        // 智能新风/AAR（dn.java）
-        d.append("──────────────────────\n");
-        d.append("智能新风(AAR):\n");
-        if (aarPmNow >= 0) {
-            d.append(String.format("  车内PM2.5: %d μg/m³ (%s)\n", aarPmNow, pmLevelStr(pmLevel(aarPmNow))));
-        } else {
-            d.append("  车内PM2.5: N/A\n");
-        }
-        d.append(String.format("  滤芯状态: %s\n", aarPmNow >= 0 ? aarStateStr(aarState) : "N/A(无PM数据)"));
-        if (aarPmDiag >= 0 || aarSensorMiss >= 0 || aarPowerBtn >= 0 || aarHvacCcm >= 0) {
-            d.append(String.format("  诊断入参: q(CCM按钮)=%s r(实际功率)=%s s(传感器缺失)=%s u(诊断)=%s\n",
-                    aarPowerBtn >= 0 ? aarPowerBtn + "" : "N/A",
-                    aarHvacCcm >= 0 ? aarHvacCcm + "" : "N/A",
-                    aarSensorMiss >= 0 ? aarSensorMiss + "" : "N/A",
-                    aarPmDiag >= 0 ? aarPmDiag + "" : "N/A"));
-        }
-        d.append(String.format("  车窗: 左前%s 右前%s 左后%s 右后%s\n",
-                winStr(winDriver), winStr(winPassenger), winStr(winLeftRear), winStr(winRightRear)));
-        if (aarPmHistory.length > 0 && aarPmHistory[0] >= 0) {
-            StringBuilder hist = new StringBuilder();
-            for (int i = 0; i < aarPmHistory.length; i++) {
-                if (aarPmHistory[i] < 0) continue;
-                if (hist.length() > 0) hist.append(' ');
-                hist.append(i * 2 + 2).append("点=").append(aarPmHistory[i]);
-            }
-            if (hist.length() > 0) d.append("  PM历史: ").append(hist).append("\n");
-        }
-
-        d.append("──────────────────────\n");
-        d.append("HVAC空调(枚举属性):\n");
-        if (hvacProps.isEmpty()) {
-            d.append("  (未枚举到属性)\n");
-        } else {
-            // 实锤语义的属性置顶显示（温度/风量/风向），其余未知 ID 排后
-            for (HashMap.Entry<Integer, String> e : hvacProps.entrySet()) {
-                if (HVAC_PROP_NAMES.containsKey(e.getKey())) {
-                    d.append("  ").append(hvacPropName(e.getKey()))
-                      .append(": ").append(formatHvacValue(e.getKey(), e.getValue())).append("\n");
-                }
-            }
-            for (HashMap.Entry<Integer, String> e : hvacProps.entrySet()) {
-                if (!HVAC_PROP_NAMES.containsKey(e.getKey())) {
-                    d.append("  ").append(hvacPropName(e.getKey()))
-                      .append(": ").append(e.getValue()).append("\n");
-                }
-            }
-        }
-
-        d.append("──────────────────────\n");
-        d.append("其他传感器（未知ID待验证）:\n");
-        d.append(otherSensorsSummary());
-
-        final String text = d.toString();
-
-        // V2 仪表盘逐控件刷新（主线程）
-        handler.post(() -> {
-            try { updateDashboard(); } catch (Throwable e) { bootLog("[UI] updateDashboard 失败: " + rootCause(e)); }
-        });
-
-        // 数据快照写文件（5秒节流，避免高频回调刷爆磁盘）
-        logToFile(text, false);
-
-        // 定向广播给乐酷驾驶（变化检测+节流，见 sendVehicleBroadcast）
-        sendVehicleBroadcast(odometer, speed, gear, range, fuelPct, fuelWarn, oilLife, ignition);
-    }
-
-    // ==================== 车况广播出口（乐酷驾驶数据桥） ====================
-
-    /** 广播 action：乐酷驾驶监听同一 action 接收 */
-    public static final String ACTION_VEHICLE_DATA = "com.jingxin.lincarinfo.VEHICLE_DATA";
-    /** 接收方包名（setPackage 定向投递，防第三方窃听车况） */
-    private static final String TARGET_PKG = "com.jingxin.pandrive";
-    /** 最小发送间隔 ms（车速高频推送，300ms 节流上限 1~3Hz） */
-    private static final long VEHICLE_BC_MIN_INTERVAL = 300L;
-    /** 上次广播时间戳 */
-    private long lastVehicleBcTime = 0L;
-    /** 上次广播快照指纹（内容不变不发） */
-    private String lastVehicleBcFingerprint = "";
-
-    /**
-     * 定向广播车况快照给乐酷驾驶。refreshDisplay 是所有数据回调的汇聚点，
-     * 此处统一出口；变化检测（指纹比对）+ 300ms 节流，静置无数据时不空中传播。
-     */
-    private void sendVehicleBroadcast(float odometer, float speed, int gear,
-                                      float range, float fuelPct, int fuelWarn,
-                                      int oilLife, int ignition) {
-        // ---- 0. 空数据哨兵：核心字段全是无效值时不发（onCreate 首次空 refreshDisplay
-        //      不占指纹基线与节流窗口，避免紧随其后的模拟数据/首条真实数据被节流丢弃） ----
-        if (speed < 0 && gear < 0 && odometer < 0 && range < 0) return;
-        long now = SystemClock.elapsedRealtime();
-        // ---- 1. 变化检测：拼全字段指纹，内容没变直接返回 ----
-        StringBuilder fp = new StringBuilder(128);
-        fp.append((int) (speed * 10)).append(',').append(gear).append(',')
-          .append((int) (odometer * 10)).append(',').append((int) (range * 10)).append(',')
-          .append((int) (fuelPct * 10)).append(',').append(fuelWarn).append(',')
-          .append(oilLife).append(',').append(ignition).append('|');
-        for (int area : TIRE_AREAS) {
-            TireData td = tireData.get(area);
-            fp.append(td == null ? "-" : (int) td.pressure + "/" + (int) td.temp + "/" + td.state).append(';');
-        }
-        fp.append(tireUnit).append('|');
-        for (HashMap.Entry<Integer, String> e : hvacProps.entrySet()) {
-            fp.append(e.getKey()).append('=').append(e.getValue()).append(';');
-        }
-        fp.append('|');
-        fp.append(getInt(evTurnLeft)).append(',').append(getInt(evTurnRight)).append('|');
-        fp.append(getInt(evDoorLB)).append(',').append(getInt(evDoorRB)).append(',')
-          .append(getInt(evDoorLR)).append(',').append(getInt(evDoorRR)).append(',')
-          .append(getInt(evTrunkIn)).append(',').append(getInt(evTrunkOut)).append('|');
-        fp.append(winDriver).append(',').append(winPassenger).append(',')
-          .append(winLeftRear).append(',').append(winRightRear).append('|');
-        fp.append(aarPmNow).append('|');
-        String fingerprint = fp.toString();
-        if (fingerprint.equals(lastVehicleBcFingerprint)) return;
-        // ---- 2. 节流：内容变了但距上次发送 <300ms，丢弃（等下次回调） ----
-        if (now - lastVehicleBcTime < VEHICLE_BC_MIN_INTERVAL) return;
-        lastVehicleBcTime = now;
-        lastVehicleBcFingerprint = fingerprint;
-
-        Intent intent = new Intent(ACTION_VEHICLE_DATA);
-        intent.setPackage(TARGET_PKG);
-        // ---- 横幅 ----
-        intent.putExtra("speed", speed);                       // km/h
-        intent.putExtra("gear", gear);                         // 0=P/1=N/2=R/3=D...
-        intent.putExtra("odometer", odometer);                 // km
-        intent.putExtra("range", range);                       // km
-        intent.putExtra("mileageUnit", mileageUnit);           // km / mi
-        intent.putExtra("fuelPct", fuelPct);                   // %
-        intent.putExtra("fuelWarn", fuelWarn);                 // 1=预警
-        intent.putExtra("oilLife", oilLife);                   // %
-        intent.putExtra("ignition", ignition);                  // 点火状态
-        // ---- 转向灯 ----
-        intent.putExtra("turnLeft", getInt(evTurnLeft));       // 3=亮/1=灭/0=关
-        intent.putExtra("turnRight", getInt(evTurnRight));
-        // ---- 胎压 ----
-        for (int i = 0; i < TIRE_AREAS.length; i++) {
-            TireData td = tireData.get(TIRE_AREAS[i]);
-            String p = "tire" + i;   // tire0=左前 tire1=右前 tire2=左后 tire3=右后
-            if (td != null) {
-                intent.putExtra(p + "Pressure", td.pressure);
-                intent.putExtra(p + "Temp", td.temp);
-                intent.putExtra(p + "State", td.state);
-            }
-        }
-        intent.putExtra("tireUnit", tireUnit);                 // psi/kPa/bar
-        // ---- 门窗后备箱 ----
-        intent.putExtra("doorLB", getInt(evDoorLB));           // 1=开
-        intent.putExtra("doorRB", getInt(evDoorRB));
-        intent.putExtra("doorLR", getInt(evDoorLR));
-        intent.putExtra("doorRR", getInt(evDoorRR));
-        intent.putExtra("trunkIn", getInt(evTrunkIn));
-        intent.putExtra("trunkOut", getInt(evTrunkOut));
-        // ---- 车窗 ----
-        intent.putExtra("winDriver", winDriver);               // 0=开 1=关
-        intent.putExtra("winPassenger", winPassenger);
-        intent.putExtra("winLeftRear", winLeftRear);
-        intent.putExtra("winRightRear", winRightRear);
-        // ---- 空调 ----
-        intent.putExtra("tempDriver", hvacAreaFloat(16385, 1));      // 主驾温度 ℃
-        intent.putExtra("tempPassenger", hvacAreaFloat(16385, 4));   // 副驾温度 ℃
-        intent.putExtra("acPower", hvacAreaInt(16387, 8));          // 1=开 2=关
-        intent.putExtra("fanLevel", hvacAreaInt(16388, 0));         // 风量档
-        intent.putExtra("acRecycle", hvacAreaInt(16395, 8));        // 内循环
-        intent.putExtra("acOn", hvacAreaInt(16393, 8));            // A/C 开关
-        // ---- 新风 PM2.5 ----
-        intent.putExtra("pm25", aarPmNow);                    // μg/m³
-        sendBroadcast(intent);
-    }
-
-    /** 把文本中的单位部分缩小到 50%（如 "81%" → 数值正常 + "%" 缩小，
-     *  "23.0℃" → 数值正常 + "℃" 缩小），返回 SpannableString */
     private SpannableString setUnitSmall(String fullText, String unit) {
         SpannableString span = new SpannableString(fullText);
         int idx = fullText.indexOf(unit);
@@ -3081,169 +1115,6 @@ public class MainActivity extends Activity {
         return span;
     }
 
-    /** 把小数点及之后的小数部分缩小到 50%（如 "74595.0" → 整数正常 + ".0" 缩小） */
-    private SpannableString setDecimalSmall(String fullText) {
-        SpannableString span = new SpannableString(fullText);
-        int dotIdx = fullText.indexOf('.');
-        if (dotIdx >= 0) {
-            span.setSpan(new RelativeSizeSpan(0.5f), dotIdx, fullText.length(),
-                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-        return span;
-    }
-
-    /** V2 仪表盘逐控件刷新（仅主线程调用） */
-    private void updateDashboard() {
-        float odometer = getFloat(evOdometer);
-        float speed = getFloat(evSpeed);
-        float range = getFloat(evRange);
-        float fuelPct = getFloat(evFuelPct);
-        int oilLife = getInt(evOilLife);
-
-        // ---- 顶部横幅 ----
-        tvGear.setText(evGear == null ? "--" : gearStr(getInt(evGear)));
-        if (evRange == null) {
-            tvRange.setText("--");
-        } else {
-            tvRange.setText(String.format("%.0f", Math.max(range, 0)));
-        }
-        if (tvRangeUnit != null) tvRangeUnit.setText(mileageUnit);
-        if (evOdometer == null || odometer < 0 || odometer == 1.6777215E7f) {
-            tvOdo.setText("--");
-        } else {
-            tvOdo.setText(String.format("%.0f", odometer));
-        }
-        if (tvOdoUnit != null) tvOdoUnit.setText(mileageUnit);
-        tvOil.setText(evOilLife == null ? "--" : setUnitSmall(oilLife + "%", "%"));
-        tvFuel.setText(evFuelPct == null ? "--" : setUnitSmall(String.format("%.0f%%", Math.max(fuelPct, 0)), "%"));
-
-        // ---- 速度 ----
-        tvSpeed.setText(evSpeed == null ? "--" : String.format("%.0f", Math.max(speed, 0)));
-
-        // ---- 转向灯 ----
-        if (turnLeft != null) turnLeft.update(getInt(evTurnLeft), true);
-        if (turnRight != null) turnRight.update(getInt(evTurnRight), false);
-
-        // ---- 四轮胎压（圆形标签：值+单位，呼吸边框） ----
-        updateTireCircle(tagLFTire, tireData.get(1));
-        updateTireCircle(tagRFTire, tireData.get(2));
-        updateTireCircle(tagLRTire, tireData.get(4));
-        updateTireCircle(tagRRTire, tireData.get(8));
-
-        // ---- 门窗（门+窗合显，任一开整框变红） ----
-        updateDoorCircle(tagLFDw, evDoorLB, winDriver);
-        updateDoorCircle(tagRFDw, evDoorRB, winPassenger);
-        updateDoorCircle(tagLRDw, evDoorLR, winLeftRear);
-        updateDoorCircle(tagRRDw, evDoorRR, winRightRear);
-        boolean trunkOpen = getInt(evTrunkIn) > 0 || getInt(evTrunkOut) > 0;
-        if (tagTrunk != null) tagTrunk.updateTrunk(trunkOpen);
-
-        // ---- 空调卡 ----
-        // 温度双区：area1=主驾 area4=副驾（16385）
-        String tempDriver = hvacAreaValue(16385, "area1");
-        String tempPassenger = hvacAreaValue(16385, "area4");
-        tvTempDriver.setText(tempDriver == null ? "--" : setUnitSmall(tempDriver + "℃", "℃"));
-        tvTempPassenger.setText(tempPassenger == null ? tempDriver == null ? "--" : setUnitSmall(tempDriver + "℃", "℃")
-                : setUnitSmall(tempPassenger + "℃", "℃"));   // 单区车机：副驾跟主驾
-        tvPm.setText(aarPmNow >= 0 ? setUnitSmall(aarPmNow + " μg/m³", " μg/m³") : "--");
-        tvPm.setTextColor(pmColor(aarPmNow));
-
-
-
-        // 标注点颜色同步：正常青、异常红（胎压<200kPa、门窗开、后备箱开）
-        linkTagDots();
-    }
-
-    /** 胎压圆形标签刷新：值+单位+状态色（驱动呼吸节奏），不显示温度；
-     *  state 判定照抄 CarLauncher pc.d() 区间 */
-    private void updateTireCircle(TireCircleView v, TireData td) {
-        if (v == null) return;
-        if (td == null) {
-            v.update("--", "kPa", TireCircleView.colorInvalid(this), false);
-            return;
-        }
-        int color;
-        boolean alert;
-        if (td.pressure >= 65533f) {
-            color = TireCircleView.colorInvalid(this); alert = false;   // 无效值灰
-        } else if (td.state > 250) {
-            color = TireCircleView.colorAlert(this); alert = true;      // 异常红
-        } else if (td.state > 150 || td.state > 75) {
-            color = TireCircleView.colorWarn(this); alert = false;      // 高压/低压琥珀
-        } else {
-            color = TireCircleView.colorOk(this); alert = false;         // 正常绿
-        }
-        // 两行显示：第一行大数值，第二行小单位；单位未知时第二行显示 "--"
-        v.update(pressureNum(td.pressure),
-                tireUnit.isEmpty() ? "--" : tireUnit, color, alert);
-    }
-
-    /** 胎压数值（不带单位）：按已知单位换算成纯数值字符串；单位未知时显示原始值 */
-    private String pressureNum(float raw) {
-        if (raw >= 65533f) return "--";           // 65533/65534/65535 厂商无效值
-        if ("bar".equals(tireUnit)) {
-            float f = raw;
-            if (f % 5.0f == 0.0f) f += 1.0f;       // pc.a: bar 模式下 5 的倍数加 1（厂商魔法）
-            return String.format("%.2f", f * 0.01f);
-        }
-        if ("psi".equals(tireUnit)) return String.format("%.0f", raw * 0.14504f);
-        if ("kPa".equals(tireUnit)) {
-            int v = (int) raw;
-            int f2 = v % 10;
-            if (f2 <= 2) return String.valueOf(v / 10 * 10);          // 四舍五入到十位（pc.a）
-            if (f2 >= 8) return String.valueOf((v / 10 + 1) * 10);
-            return String.valueOf(v / 10 * 10 + 5);
-        }
-        return String.valueOf((int) raw);   // 单位未知：先按原始值显示，推送到达后自动换算
-    }
-
-    /** 门窗圆形标签刷新：传入门窗状态，DoorCircleView 内部决定显示/隐藏和动画。
-     *  窗值对齐 CarLauncher dn.f()：1=关，其余有效值（0/2/3…）都算未关，-1 无数据 */
-    private void updateDoorCircle(DoorCircleView v, Object doorEv, int winState) {
-        if (v == null) return;
-        boolean doorOpen = getInt(doorEv) > 0;
-        boolean winOpen = winState >= 0 && winState != 1;   // 1=关，其余有效值=未关
-        v.update(doorOpen, winOpen);
-    }
-
-    /** 从 hvacProps 里取指定 area 的值（16385 温度这类多区属性用） */
-    private String hvacAreaValue(int propId, String areaPrefix) {
-        String raw = hvacProps.get(propId);
-        if (raw == null) return null;
-        for (String tag : raw.split(";")) {
-            if (tag.startsWith(areaPrefix + "=")) {
-                String v = tag.substring(areaPrefix.length() + 1).trim();
-                if (v.endsWith("f")) v = v.substring(0, v.length() - 1);
-                return v;
-            }
-        }
-        return null;
-    }
-
-    /** 取属性最新值（开关类：分号末段） */
-    private String hvacLatestValue(int propId) {
-        String raw = hvacProps.get(propId);
-        if (raw == null) return null;
-        String latest = raw.substring(raw.lastIndexOf(';') + 1).trim();
-        int eq = latest.indexOf('=');
-        String v = eq > 0 ? latest.substring(eq + 1).trim() : latest;
-        if (v.endsWith("f")) v = v.substring(0, v.length() - 1);
-        return v;
-    }
-
-    /** 胶囊芯片：文本 + 开启高亮（bg_chip_on）/关闭（bg_chip） */
-    private void setChip(TextView chip, String text, boolean on) {
-        chip.setText(text);
-        setChipBg(chip, on);
-    }
-
-    private void setChipBg(TextView chip, boolean on) {
-        chip.setBackgroundResource(on ? R.drawable.bg_chip_on : R.drawable.bg_chip);
-        chip.setTextColor(on ? getResources().getColor(R.color.accent_cyan)
-                : getResources().getColor(R.color.chip_off_text));
-    }
-
-    /** PM2.5 颜色：优绿/良青/中黄/差橙/差红/严重红/无效灰（日夜自适应） */
     private int pmColor(int pm) {
         android.content.res.Resources res = getResources();
         int lv = pmLevel(pm);
@@ -3258,216 +1129,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** HVAC 已实锤属性的值格式化：
-     *  16385 设定温度 float℃（双区，area1=主驾 area4=副驾）
-     *  16388 风量档（1→2→3→4 递增，15=最大/除雾模式）
-     *  16393 A/C制冷（1=开 0=关）
-     *  16395 内循环（1=开 0=关）
-     *  20481 座椅通风（area1=主驾 area2=副驾，0=关 1=开 2=初始）
-     *  20487 进气模式（1=内循环 2=外循环）
-     *  其余原值显示 */
-    private static String formatHvacValue(int propId, String raw) {
-        try {
-            if (propId == 16385) {
-                // 双区温度：area1=主驾 area4=副驾，各自取最新值
-                StringBuilder sb = new StringBuilder();
-                for (String tag : raw.split(";")) {
-                    int eq = tag.indexOf('=');
-                    if (eq <= 0) continue;
-                    String areaStr = tag.substring(0, eq).replace("area", "").trim();
-                    String val = tag.substring(eq + 1).trim().replace("f", "");
-                    sb.append(hvacAreaName(areaStr)).append(val).append("℃ ");
-                }
-                if (sb.length() > 0) return sb.toString().trim();
-            }
-            if (propId == 16388) {
-                StringBuilder sb = new StringBuilder();
-                for (String tag : raw.split(";")) {
-                    int eq = tag.indexOf('=');
-                    if (eq <= 0) continue;
-                    String areaStr = tag.substring(0, eq).replace("area", "").trim();
-                    String val = tag.substring(eq + 1).trim();
-                    String areaName = hvacAreaName(areaStr);
-                    int n = parseHvacIntStatic(val);
-                    if (n == 15) sb.append(areaName).append("最大/除雾 ");
-                    else if (n >= 0) sb.append(areaName).append(n).append("档 ");
-                    else sb.append(areaName).append(val).append(" ");
-                }
-                if (sb.length() > 0) return sb.toString().trim();
-            }
-            if (propId == 16393 || propId == 16395 || propId == 20487) {
-                // 开关类：取最新值（分号末段）
-                String latest = raw.substring(raw.lastIndexOf(';') + 1).trim();
-                int eq = latest.indexOf('=');
-                String val = eq > 0 ? latest.substring(eq + 1).trim() : latest;
-                int n = parseHvacIntStatic(val);
-                if (propId == 20487) return n == 1 ? "内循环" : n == 2 ? "外循环" : val;
-                return n == 1 ? "开" : n == 0 ? "关" : val;
-            }
-            if (propId == 20481) {
-                // 座椅通风：area1=主驾 area2=副驾
-                StringBuilder sb = new StringBuilder();
-                for (String tag : raw.split(";")) {
-                    int eq = tag.indexOf('=');
-                    if (eq <= 0) continue;
-                    String areaStr = tag.substring(0, eq).replace("area", "").trim();
-                    String val = tag.substring(eq + 1).trim();
-                    String areaName = "1".equals(areaStr) ? "主驾" : "2".equals(areaStr) ? "副驾" : "区" + areaStr;
-                    int n = parseHvacIntStatic(val);
-                    sb.append(areaName).append(n == 0 ? "关 " : n == 1 ? "开 " : n == 2 ? "初始 " : val + " ");
-                }
-                if (sb.length() > 0) return sb.toString().trim();
-            }
-            if (propId == 16387) {
-                String latest = raw.substring(raw.lastIndexOf(';') + 1).trim();
-                int eq = latest.indexOf('=');
-                String val = eq > 0 ? latest.substring(eq + 1).trim() : latest;
-                int n = parseHvacIntStatic(val);
-                return n == 2 ? "空调关闭" : n == 1 ? "空调通电" : n == 0 ? "待机" : val;
-            }
-        } catch (Throwable ignored) {}
-        return raw;
+    private static int pmLevel(int pm) {
+        if (pm < 0) return 0;
+        if (pm <= 35) return 1;
+        if (pm <= 75) return 2;
+        if (pm <= 115) return 3;
+        if (pm <= 150) return 4;
+        if (pm <= 250) return 5;
+        return pm <= 500 ? 6 : 0;
     }
 
-    /** HVAC 区域 ID → 座位名（23:01 实测：1=主驾 4=副驾 128=后排 8=前排 全局） */
-    private static String hvacAreaName(String area) {
-        switch (area) {
-            case "1":   return "主驾";
-            case "4":   return "副驾";
-            case "128": return "后排";
-            case "8":   return "前排";
-            case "0":   return "";
-            default:    return "区" + area + " ";
-        }
-    }
-
-    private static int parseHvacIntStatic(String v) {
-        if (v == null) return -1;
-        try { return Integer.parseInt(v.replace("f", "")); } catch (NumberFormatException e) { return -1; }
-    }
-
-    /** 点火状态映射（CarSensorEvent.IGNITION_STATE_*，javap 核实） */
-    private String ignitionStr(int v) {
-        switch (v) {
-            case -1: return "N/A";
-            case 0:  return "未知";
-            case 1:  return "LOCK(锁止)";
-            case 2:  return "OFF(关闭)";
-            case 3:  return "ACC(通电)";
-            case 4:  return "ON(发动)";
-            case 5:  return "START(启动中)";
-            default: return "值=" + v;
-        }
-    }
-
-    /** 未知传感器汇总（首次收到的值已写 boot.log，这里给 UI 一份简表） */
-    private String otherSensorsSummary() {
-        if (evOthers.isEmpty()) return "  (无)\n";
-        StringBuilder sb = new StringBuilder();
-        for (HashMap.Entry<Integer, Object> e2 : evOthers.entrySet()) {
-            String v = eventSummary(e2.getValue());
-            if (v.isEmpty()) v = "(空)";
-            sb.append("  type=").append(e2.getKey())
-              .append(": ").append(v).append("\n");
-        }
-        return sb.toString();
-    }
-
-    /** V2 仪表盘的文本快照（写 carinfo.log 用）——沿用旧版文本结构 */
-    private String buildDataSnapshot() {
-        StringBuilder d = new StringBuilder();
-        d.append("════════════════════════\n");
-        d.append("  车况数据 (CarService直读)\n");
-        d.append("════════════════════════\n");
-        float odometer = getFloat(evOdometer);
-        float speed = getFloat(evSpeed);
-        int gear = getInt(evGear);
-        float range = getFloat(evRange);
-        float fuelPct = getFloat(evFuelPct);
-        int fuelWarn = getInt(evFuelWarn);
-        int ignition = getInt(evIgnition);
-        d.append(String.format("总里程: %s %s\n",
-                (odometer >= 0 && odometer != 1.6777215E7f) ? String.format("%.1f", odometer) : "N/A", mileageUnit));
-        d.append(String.format("车速: %s km/h\n", speed >= 0 ? String.format("%.0f", speed) : "N/A"));
-        d.append(String.format("挡位: %s\n", evGear == null ? "N/A(无数据)" : gearStr(gear)));
-        d.append(String.format("油量: %s\n", fuelPct >= 0 ? String.format("%.0f%%", fuelPct) : "N/A"));
-        d.append(String.format("续航: %s %s\n",
-                range >= 0 ? String.format("%.0f", range) : "N/A", mileageUnit));
-        d.append(String.format("油量预警: %s\n",
-                evFuelWarn == null ? "N/A(无数据)" : (fuelWarn == 1 ? "触发" : "正常")));
-        d.append(String.format("点火: %s\n", ignitionStr(ignition)));
-        int oilLife = getInt(evOilLife);
-        d.append(String.format("机油寿命: %s\n",
-                evOilLife == null ? "N/A(无数据)" : oilLife + "%"));
-        d.append("──────────────────────\n");
-        d.append("车门/车窗:\n");
-        d.append(String.format("  左前:门%s 窗%s  右前:门%s 窗%s\n",
-                doorStr(evDoorLB), winStr(winDriver), doorStr(evDoorRB), winStr(winPassenger)));
-        d.append(String.format("  左后:门%s 窗%s  右后:门%s 窗%s\n",
-                doorStr(evDoorLR), winStr(winLeftRear), doorStr(evDoorRR), winStr(winRightRear)));
-        d.append(String.format("  后备箱内:%s 外:%s\n", doorStr(evTrunkIn), doorStr(evTrunkOut)));
-        d.append("──────────────────────\n");
-        d.append("胎压");
-        if (!tireUnit.isEmpty()) d.append("(单位: ").append(tireUnit).append(")");
-        d.append(":\n");
-        String[] labels = {"左前", "右前", "左后", "右后"};
-        for (int i = 0; i < TIRE_AREAS.length; i++) {
-            TireData td = tireData.get(TIRE_AREAS[i]);
-            if (td != null) {
-                d.append(String.format("  %s: %s %s %s\n",
-                        labels[i], pressureStr(td.pressure), tempStr(td.temp), tireStateStr(td.state)));
-            } else {
-                d.append("  " + labels[i] + ": N/A\n");
-            }
-        }
-        d.append("──────────────────────\n");
-        d.append("空调/新风:\n");
-        if (aarPmNow >= 0) {
-            d.append(String.format("  车内PM2.5: %d μg/m³ (%s)\n", aarPmNow, pmLevelStr(pmLevel(aarPmNow))));
-        } else {
-            d.append("  车内PM2.5: N/A\n");
-        }
-        for (int propId : new int[]{16385, 16388, 16393, 16395, 20481, 20487, 20513}) {
-            String raw = hvacProps.get(propId);
-            if (raw != null) {
-                d.append("  ").append(hvacPropName(propId)).append(": ")
-                  .append(formatHvacValue(propId, raw)).append("\n");
-            }
-        }
-        if (hvacProps.isEmpty()) d.append("  (HVAC 无数据)\n");
-        d.append("其他传感器:\n");
-        d.append(otherSensorsSummary());
-        return d.toString();
-    }
-
-    private String doorStr(Object ev) {
-        int s = getInt(ev);
-        if (s < 0) return "N/A";
-        return s == 0 ? "关" : "开";
-    }
-
-    /** 胎压状态判定：照抄 CarLauncher pc.d() 区间——state≤75 均正常档，>250 超高 */
-    private String tireStateStr(int state) {
-        if (state <= 75) return "正常";
-        if (state <= 150) return "低压";
-        return state <= 250 ? "高压" : "异常";
-    }
-
-    /** 胎压显示：照抄 CarLauncher pc.a(unit, value) — 65533~65535 厂商无效值显示"--"；
-     *  单位已知则按单位换算（bar×0.01 / psi×0.14504 / kPa 十位取整），未知则原始值+kPa 换算双显 */
-    private String pressureStr(float raw) {
-        String unit = tireUnit.isEmpty() ? "--" : tireUnit;
-        return pressureNum(raw) + unit;   // 与圆形两行显示同源：数值+单位拼接版
-    }
-
-    /** 胎温显示：CarLauncher 不显示温度且厂商未提供换算，仅原始值留档（≥65533 为无效值） */
-    private String tempStr(float raw) {
-        if (raw >= 65533f) return "";
-        return String.format("T(raw=%,.0f)", raw);
-    }
-
-    /** 挡位值映射（CarLauncher LauncherActivity.a(int,boolean) 铁证：百度自定义枚举）
-     *  0=静止(P)、1=N、2=R、3~10=前进挡（D 及 1~8 挡细分），非标准 GEAR_* 位标志 */
     private String gearStr(int v) {
         switch (v) {
             case 0: return "P";
@@ -3481,92 +1152,7 @@ public class MainActivity extends Activity {
             case 8: return "D6";
             case 9: return "D7";
             case 10: return "D8";
-            default: return "值=" + v;
-        }
-    }
-
-    // ========== 日志文件 ==========
-
-    /** 过程日志：仅输出 Logcat，不再写文件（按用户要求精简日志） */
-    private static volatile String writeFailReason;
-
-    private static void bootLog(String msg) {
-        Log.d(TAG, msg);
-    }
-
-    /** UI 日志：仅输出 Logcat，不再写文件 */
-    private void ui(String text) {
-        Log.d(TAG, text);
-    }
-
-    /** 车况数据快照：不再写文件（按用户要求精简日志） */
-    private void logToFile(String text, boolean force) {
-        // 不再写 carinfo.log
-    }
-
-    /** 崩溃日志：写文件保留 */
-    private static void crashLog(String msg) {
-        Log.e(TAG, msg);
-        writeAppend(BOOT_LOG, msg);
-    }
-
-    /** 胎压日志：写文件保留（推送/重读/刷新链路全程留痕，区分"推送没来"vs"读了没刷屏"） */
-    private static void tireLog(String msg) {
-        Log.d(TAG, msg);
-        writeAppend(BOOT_LOG, msg);
-    }
-
-    /** HVAC 关键操作日志：写文件保留（仅空调控制属性） */
-    private static void hvacLog(String msg) {
-        Log.d(TAG, msg);
-        writeAppend(BOOT_LOG, msg);
-    }
-
-    /** 追加写一行；失败时（EACCES 等）轮转到带时间戳的新文件 */
-    private static void writeAppend(File f, String msg) {
-        try {
-            File dir = f.getParentFile();
-            if (dir != null && !dir.exists()) dir.mkdirs();
-            String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.CHINA).format(new Date());
-            if (writeAppendRaw(f, ts, msg)) return;
-            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA).format(new Date());
-            String name = f.getName();
-            int dot = name.lastIndexOf('.');
-            String base = dot > 0 ? name.substring(0, dot) : name;
-            String ext = dot > 0 ? name.substring(dot) : ".log";
-            writeAppendRaw(new File(dir, base + "_" + stamp + ext), ts, msg);
-        } catch (Throwable ignored) {}
-    }
-
-    private static boolean writeAppendRaw(File f, String... lines) {
-        try (PrintWriter pw = new PrintWriter(new FileOutputStream(f, true))) {
-            for (String line : lines) pw.println(line);
-            return true;
-        } catch (Throwable e) {
-            Log.w(TAG, "append fail " + f.getName() + ": " + e.getMessage());
-            if (writeFailReason == null) writeFailReason = f.getName() + ": " + e.getMessage();
-            return false;
-        }
-    }
-
-    private static String stackTrace(Throwable t) {
-        StringWriter sw = new StringWriter();
-        t.printStackTrace(new PrintWriter(sw));
-        return sw.toString();
-    }
-
-    private void setStatus(String text) {
-        Log.d(TAG, "[状态] " + text);
-    }
-
-    private static class TireData {
-        int state;
-        float pressure;
-        float temp;
-        TireData(int state, float pressure, float temp) {
-            this.state = state;
-            this.pressure = pressure;
-            this.temp = temp;
+            default: return v < 0 ? "--" : "值=" + v;
         }
     }
 }
